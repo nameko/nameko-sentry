@@ -6,21 +6,24 @@ Extension for `nameko <http://nameko.readthedocs.org>`_ that sends entrypoint ex
 Usage
 -----
 
-Add your sentry DSN and optional client configuration to your nameko config file::
+Add your sentry DSN and optional client configuration to your nameko config file:
 
 .. code-block:: yaml
+
     # config.yaml
     SENTRY:
         DSN: ...
         CLIENT_CONFIG:
-            site: "my site name:
+            site: "my site name"
             processors:
                 - myapp.processors.SanitizePasswordsProcessor
     ...
 
+
 Include the ``SentryReporter`` dependency in your service class:
 
 .. code-block:: python
+
     # service.py
     from nameko.web.handlers import http
     from nameko_sentry import SentryReporter
