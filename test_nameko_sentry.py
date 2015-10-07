@@ -63,10 +63,40 @@ def test_setup(reporter):
     # client config and DSN applied correctly
     assert reporter.client.site == "site name"
     assert reporter.client.get_public_dsn() == "//user@localhost:9000/1"
+    assert reporter.client.is_enabled()
 
     # transport set correctly
     transport = reporter.client.remote.get_transport()
     assert isinstance(transport, EventletHTTPTransport)
+
+
+def test_setup_without_optional_config(config):
+
+    del config['SENTRY']['CLIENT_CONFIG']
+    container = Mock(config=config)
+
+    reporter = SentryReporter().bind(container, "sentry")
+    reporter.setup()
+
+    # DSN applied correctly
+    assert reporter.client.get_public_dsn() == "//user@localhost:9000/1"
+    assert reporter.client.is_enabled()
+
+    # transport set correctly
+    transport = reporter.client.remote.get_transport()
+    assert isinstance(transport, EventletHTTPTransport)
+
+
+def test_disabled(config):
+    config['SENTRY']['DSN'] = None
+    container = Mock(config=config)
+
+    reporter = SentryReporter().bind(container, "sentry")
+    reporter.setup()
+
+    # DSN applied correctly
+    assert reporter.client.get_public_dsn() == None
+    assert not reporter.client.is_enabled()
 
 
 def test_worker_result(reporter, worker_ctx):
