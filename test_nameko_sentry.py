@@ -210,6 +210,19 @@ def test_stop(container_factory, service_cls, config):
     reporter.stop()
     assert reporter._gt.dead
 
+    # subsequent stop should be a no-op
+    reporter.stop()
+
+
+def test_stop_not_started(container_factory, service_cls, config):
+
+    container = container_factory(service_cls, config)
+    reporter = get_extension(container, SentryReporter)
+
+    reporter.setup()
+    assert reporter._gt is None
+    reporter.stop()
+
 
 def test_end_to_end(container_factory, service_cls, config):
 
