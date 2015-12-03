@@ -109,7 +109,7 @@ def test_disabled(config):
     reporter.setup()
 
     # DSN applied correctly
-    assert reporter.client.get_public_dsn() == None
+    assert reporter.client.get_public_dsn() is None
     assert not reporter.client.is_enabled()
 
 
