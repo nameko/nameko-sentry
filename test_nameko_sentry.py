@@ -5,10 +5,10 @@ from mock import Mock, call, patch
 from nameko.containers import WorkerContext
 from nameko.extensions import Entrypoint
 from nameko.testing.services import dummy, entrypoint_hook, entrypoint_waiter
+from nameko.testing.utils import wait_for_call  # TODO: new lib
 from nameko.testing.utils import get_extension
 from nameko_sentry import SentryReporter
 from raven.transport.threaded import ThreadedHTTPTransport
-from util import wait_for_call  # TODO: new lib
 
 
 class CustomException(Exception):
@@ -191,11 +191,12 @@ def test_start(container_factory, service_cls, config):
     reporter.setup()
 
     with patch.object(reporter, 'queue') as queue:
-        with wait_for_call(queue, 'get') as get:
-            reporter.start()
+        reporter.start()
+        with wait_for_call(1, queue.get):
+            pass
 
     assert reporter._gt is not None
-    assert get.called  # do you need to patch as well?
+    assert queue.get.called
 
 
 def test_stop(container_factory, service_cls, config):
