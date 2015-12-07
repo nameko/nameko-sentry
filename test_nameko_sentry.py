@@ -1,6 +1,7 @@
 import logging
 
 import pytest
+from eventlet.queue import Queue
 from mock import Mock, call, patch
 from nameko.containers import WorkerContext
 from nameko.extensions import Entrypoint
@@ -83,6 +84,9 @@ def test_setup(reporter):
     transport = reporter.client.remote.get_transport()
     assert isinstance(transport, ThreadedHTTPTransport)
 
+    # queue created
+    assert isinstance(reporter.queue, Queue)
+
 
 def test_setup_without_optional_config(config):
 
@@ -99,6 +103,9 @@ def test_setup_without_optional_config(config):
     # transport set correctly
     transport = reporter.client.remote.get_transport()
     assert isinstance(transport, ThreadedHTTPTransport)
+
+    # queue created
+    assert isinstance(reporter.queue, Queue)
 
 
 def test_disabled(config):
