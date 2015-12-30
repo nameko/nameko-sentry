@@ -217,7 +217,7 @@ def test_stop(container_factory, service_cls, config):
     reporter.stop()
     assert reporter._gt.dead
 
-    # subsequent stop should be a no-op
+    # subsequent stop has no adverse effect
     reporter.stop()
 
 
