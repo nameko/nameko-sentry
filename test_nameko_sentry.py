@@ -1,12 +1,12 @@
 import logging
 
 import pytest
+from eventlet.event import Event
 from eventlet.queue import Queue
 from mock import Mock, call, patch
 from nameko.containers import WorkerContext
 from nameko.extensions import Entrypoint
 from nameko.testing.services import dummy, entrypoint_hook, entrypoint_waiter
-from nameko.testing.utils import wait_for_call  # TODO: new lib
 from nameko.testing.utils import get_extension
 from nameko_sentry import SentryReporter
 from raven.transport.threaded import ThreadedHTTPTransport
@@ -197,13 +197,17 @@ def test_start(container_factory, service_cls, config):
 
     reporter.setup()
 
-    with patch.object(reporter, 'queue') as queue:
+    running = Event()
+
+    def run():
+        running.send(True)
+
+    with patch.object(reporter, '_run', wraps=run) as patched_run:
         reporter.start()
-        with wait_for_call(1, queue.get):
-            pass
+        running.wait()
+        assert patched_run.call_count == 1
 
     assert reporter._gt is not None
-    assert queue.get.called
 
 
 def test_stop(container_factory, service_cls, config):
