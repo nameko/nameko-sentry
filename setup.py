@@ -3,25 +3,22 @@ from setuptools import setup
 
 setup(
     name='nameko-sentry',
-    version='0.0.1',
+    version='0.0.2',
     description='Nameko extension sends entrypoint exceptions to sentry',
     author='Matt Bennett',
     author_email='matt@bennett.name',
     url='http://github.com/mattbennett/nameko-sentry',
     py_modules=['nameko_sentry'],
     install_requires=[
-        "nameko>=2.0.0",
+        "nameko>=2.2.0",
         "raven>=3.0.0"
     ],
     extras_require={
         'dev': [
-            "coverage==4.0a1",
-            "flake8==2.1.0",
-            "mccabe==0.3",
-            "pep8==1.6.1",
-            "pyflakes==0.8.1",
-            "pylint==1.0.0",
-            "pytest==2.4.2",
+            "coverage==4.0.3",
+            "flake8==2.5.0",
+            "pylint==1.5.1",
+            "pytest==2.8.3",
         ]
     },
     dependency_links=[],

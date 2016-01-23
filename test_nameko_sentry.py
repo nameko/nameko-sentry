@@ -1,15 +1,15 @@
 import logging
 
-from mock import Mock, patch, call
 import pytest
-
+from eventlet.event import Event
+from eventlet.queue import Queue
+from mock import Mock, call, patch
 from nameko.containers import WorkerContext
 from nameko.extensions import Entrypoint
 from nameko.testing.services import dummy, entrypoint_hook, entrypoint_waiter
 from nameko.testing.utils import get_extension
-from raven.transport.eventlet import EventletHTTPTransport
-
 from nameko_sentry import SentryReporter
+from raven.transport.threaded import ThreadedHTTPTransport
 
 
 class CustomException(Exception):
@@ -26,6 +26,21 @@ def config():
             }
         }
     }
+
+
+@pytest.fixture
+def service_cls():
+
+    class Service(object):
+        name = "service"
+
+        sentry = SentryReporter()
+
+        @dummy
+        def broken(self):
+            raise CustomException("Error!")
+
+    return Service
 
 
 @pytest.fixture
@@ -63,20 +78,55 @@ def test_setup(reporter):
     # client config and DSN applied correctly
     assert reporter.client.site == "site name"
     assert reporter.client.get_public_dsn() == "//user@localhost:9000/1"
+    assert reporter.client.is_enabled()
 
     # transport set correctly
     transport = reporter.client.remote.get_transport()
-    assert isinstance(transport, EventletHTTPTransport)
+    assert isinstance(transport, ThreadedHTTPTransport)
+
+    # queue created
+    assert isinstance(reporter.queue, Queue)
+
+
+def test_setup_without_optional_config(config):
+
+    del config['SENTRY']['CLIENT_CONFIG']
+    container = Mock(config=config)
+
+    reporter = SentryReporter().bind(container, "sentry")
+    reporter.setup()
+
+    # DSN applied correctly
+    assert reporter.client.get_public_dsn() == "//user@localhost:9000/1"
+    assert reporter.client.is_enabled()
+
+    # transport set correctly
+    transport = reporter.client.remote.get_transport()
+    assert isinstance(transport, ThreadedHTTPTransport)
+
+    # queue created
+    assert isinstance(reporter.queue, Queue)
+
+
+def test_disabled(config):
+    config['SENTRY']['DSN'] = None
+    container = Mock(config=config)
+
+    reporter = SentryReporter().bind(container, "sentry")
+    reporter.setup()
+
+    # DSN applied correctly
+    assert reporter.client.get_public_dsn() is None
+    assert not reporter.client.is_enabled()
 
 
 def test_worker_result(reporter, worker_ctx):
     result = "OK!"
 
     reporter.setup()
-    with patch.object(reporter, 'client') as client:
-        reporter.worker_result(worker_ctx, result, None)
+    reporter.worker_result(worker_ctx, result, None)
 
-    assert not client.captureException.called
+    assert reporter.queue.qsize() == 0
 
 
 def test_worker_exception(reporter, worker_ctx):
@@ -85,50 +135,109 @@ def test_worker_exception(reporter, worker_ctx):
     exc_info = (CustomException, exc, None)
 
     reporter.setup()
-    with patch.object(reporter, 'client') as client:
-        reporter.worker_result(worker_ctx, None, exc_info)
+    reporter.worker_result(worker_ctx, None, exc_info)
 
     # generate expected call args
     logger = "{}.{}".format(
         worker_ctx.service_name, worker_ctx.entrypoint.method_name)
-    message = "Unhandled exception in call {}: {} {!r}".format(
+    expected_message = "Unhandled exception in call {}: {} {!r}".format(
         worker_ctx.call_id, CustomException.__name__, str(exc)
     )
-    extra = {'exc': exc}
+    expected_extra = {'exc': exc}
 
     if isinstance(exc, worker_ctx.entrypoint.expected_exceptions):
         loglevel = logging.WARNING
     else:
         loglevel = logging.ERROR
 
-    data = {
+    expected_data = {
         'logger': logger,
         'level': loglevel,
-        'message': message,
+        'message': expected_message,
         'tags': {
             'call_id': worker_ctx.call_id,
             'parent_call_id': worker_ctx.immediate_parent_call_id
         }
     }
 
-    # verify call
+    assert reporter.queue.qsize() == 1
+
+    _, message, extra, data = reporter.queue.get()
+    assert message == expected_message
+    assert extra == expected_extra
+    assert data == expected_data
+
+
+def test_run(reporter):
+
+    exc = CustomException("Error!")
+    exc_info = (CustomException, exc, None)
+
+    message = "message"
+    extra = "extra"
+    data = "data"
+
+    reporter.setup()
+
+    reporter.queue.put((exc_info, message, extra, data))
+    reporter.queue.put(None)
+
+    with patch.object(reporter, 'client') as client:
+        reporter._run()
+
     assert client.captureException.call_args_list == [
         call(exc_info, message=message, extra=extra, data=data)
     ]
 
 
-def test_end_to_end(container_factory, config):
+def test_start(container_factory, service_cls, config):
 
-    class Service(object):
-        name = "service"
+    container = container_factory(service_cls, config)
+    reporter = get_extension(container, SentryReporter)
 
-        sentry = SentryReporter()
+    reporter.setup()
 
-        @dummy
-        def broken(self):
-            raise CustomException("Error!")
+    running = Event()
 
-    container = container_factory(Service, config)
+    def run():
+        running.send(True)
+
+    with patch.object(reporter, '_run', wraps=run) as patched_run:
+        reporter.start()
+        running.wait()
+        assert patched_run.call_count == 1
+
+    assert reporter._gt is not None
+
+
+def test_stop(container_factory, service_cls, config):
+
+    container = container_factory(service_cls, config)
+    reporter = get_extension(container, SentryReporter)
+
+    reporter.setup()
+    reporter.start()
+    assert not reporter._gt.dead
+    reporter.stop()
+    assert reporter._gt.dead
+
+    # subsequent stop has no adverse effect
+    reporter.stop()
+
+
+def test_stop_not_started(container_factory, service_cls, config):
+
+    container = container_factory(service_cls, config)
+    reporter = get_extension(container, SentryReporter)
+
+    reporter.setup()
+    assert reporter._gt is None
+    reporter.stop()
+
+
+def test_end_to_end(container_factory, service_cls, config):
+
+    container = container_factory(service_cls, config)
     container.start()
 
     reporter = get_extension(container, SentryReporter)
