@@ -2,14 +2,15 @@ import logging
 
 import pytest
 from eventlet.event import Event
-from eventlet.queue import Queue
-from mock import Mock, call, patch
+from mock import Mock, patch
 from nameko.containers import WorkerContext
 from nameko.extensions import Entrypoint
 from nameko.testing.services import dummy, entrypoint_hook, entrypoint_waiter
-from nameko.testing.utils import get_extension
+from nameko.web.handlers import http
 from nameko_sentry import SentryReporter
-from raven.transport.threaded import ThreadedHTTPTransport
+from raven import Client
+from raven.transport.eventlet import EventletHTTPTransport
+from six.moves.urllib import parse
 
 
 class CustomException(Exception):
@@ -20,7 +21,7 @@ class CustomException(Exception):
 def config():
     return {
         'SENTRY': {
-            'DSN': 'http://user:pass@localhost:9000/1',
+            'DSN': 'eventlet+http://user:pass@localhost:9000/1',
             'CLIENT_CONFIG': {
                 'site': 'site name'
             }
@@ -67,12 +68,13 @@ def worker_ctx(request, container):
     )
 
 
-@pytest.fixture
+@pytest.yield_fixture
 def reporter(container):
-    return SentryReporter().bind(container, "sentry")
+    with patch.object(Client, 'captureException'):
+        yield SentryReporter().bind(container, "sentry")
 
 
-def test_setup(reporter):
+def test_setup(reporter, config):
     reporter.setup()
 
     # client config and DSN applied correctly
@@ -82,13 +84,10 @@ def test_setup(reporter):
 
     # transport set correctly
     transport = reporter.client.remote.get_transport()
-    assert isinstance(transport, ThreadedHTTPTransport)
-
-    # queue created
-    assert isinstance(reporter.queue, Queue)
+    assert isinstance(transport, EventletHTTPTransport)
 
 
-def test_setup_without_optional_config(config):
+def test_setup_without_optional_config(request, config):
 
     del config['SENTRY']['CLIENT_CONFIG']
     container = Mock(config=config)
@@ -102,10 +101,7 @@ def test_setup_without_optional_config(config):
 
     # transport set correctly
     transport = reporter.client.remote.get_transport()
-    assert isinstance(transport, ThreadedHTTPTransport)
-
-    # queue created
-    assert isinstance(reporter.queue, Queue)
+    assert isinstance(transport, EventletHTTPTransport)
 
 
 def test_disabled(config):
@@ -126,7 +122,7 @@ def test_worker_result(reporter, worker_ctx):
     reporter.setup()
     reporter.worker_result(worker_ctx, result, None)
 
-    assert reporter.queue.qsize() == 0
+    assert reporter.client.captureException.call_count == 0
 
 
 def test_worker_exception(reporter, worker_ctx):
@@ -160,91 +156,32 @@ def test_worker_exception(reporter, worker_ctx):
         }
     }
 
-    assert reporter.queue.qsize() == 1
+    assert reporter.client.captureException.call_count == 1
 
-    _, message, extra, data = reporter.queue.get()
-    assert message == expected_message
-    assert extra == expected_extra
-    assert data == expected_data
-
-
-def test_run(reporter):
-
-    exc = CustomException("Error!")
-    exc_info = (CustomException, exc, None)
-
-    message = "message"
-    extra = "extra"
-    data = "data"
-
-    reporter.setup()
-
-    reporter.queue.put((exc_info, message, extra, data))
-    reporter.queue.put(None)
-
-    with patch.object(reporter, 'client') as client:
-        reporter._run()
-
-    assert client.captureException.call_args_list == [
-        call(exc_info, message=message, extra=extra, data=data)
-    ]
+    _, kwargs = reporter.client.captureException.call_args
+    assert kwargs['message'] == expected_message
+    assert kwargs['extra'] == expected_extra
+    assert kwargs['data'] == expected_data
 
 
-def test_start(container_factory, service_cls, config):
+@patch.object(EventletHTTPTransport, '_send_payload')
+def test_raven_transport_does_not_affect_container(
+    send_mock, container_factory, service_cls, config
+):
+    """ Allowing raven to use the eventlet transport should not affect the
+    nameko container, even if raven blocks trying to make calls.
+    """
+    def block(*args):
+        Event().wait()
 
-    container = container_factory(service_cls, config)
-    reporter = get_extension(container, SentryReporter)
-
-    reporter.setup()
-
-    running = Event()
-
-    def run():
-        running.send(True)
-
-    with patch.object(reporter, '_run', wraps=run) as patched_run:
-        reporter.start()
-        running.wait()
-        assert patched_run.call_count == 1
-
-    assert reporter._gt is not None
-
-
-def test_stop(container_factory, service_cls, config):
-
-    container = container_factory(service_cls, config)
-    reporter = get_extension(container, SentryReporter)
-
-    reporter.setup()
-    reporter.start()
-    assert not reporter._gt.dead
-    reporter.stop()
-    assert reporter._gt.dead
-
-    # subsequent stop has no adverse effect
-    reporter.stop()
-
-
-def test_stop_not_started(container_factory, service_cls, config):
-
-    container = container_factory(service_cls, config)
-    reporter = get_extension(container, SentryReporter)
-
-    reporter.setup()
-    assert reporter._gt is None
-    reporter.stop()
-
-
-def test_end_to_end(container_factory, service_cls, config):
+    send_mock.side_effect = block
 
     container = container_factory(service_cls, config)
     container.start()
 
-    reporter = get_extension(container, SentryReporter)
+    with entrypoint_hook(container, 'broken') as broken:
+        with entrypoint_waiter(container, 'broken'):
+            with pytest.raises(CustomException):
+                broken()
 
-    with patch.object(reporter, 'client') as client:
-        with entrypoint_hook(container, 'broken') as broken:
-            with entrypoint_waiter(container, 'broken'):
-                with pytest.raises(CustomException):
-                    broken()
-    assert client.captureException.call_count == 1
+    container.stop()
