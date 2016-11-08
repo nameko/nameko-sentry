@@ -1,4 +1,5 @@
 import logging
+import socket
 
 import pytest
 from eventlet.event import Event
@@ -185,3 +186,65 @@ def test_raven_transport_does_not_affect_container(
                 broken()
 
     container.stop()
+
+
+class TestEndToEnd(object):
+
+    @pytest.fixture
+    def tracker(self):
+        return Mock()
+
+    @pytest.fixture
+    def free_port(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        return port
+
+    @pytest.fixture
+    def sentry_dsn(self, free_port):
+        return 'eventlet+http://user:pass@localhost:{}/1'.format(free_port)
+
+    @pytest.fixture
+    def sentry_stub(self, container_factory, sentry_dsn, tracker):
+        """ Start a container to imitate a sentry server
+        """
+
+        class SentryStub(object):
+            name = "sentry"
+
+            @http('POST', "/api/1/store/")
+            def report(self, request):
+                tracker(request)
+                return 200, "OK"
+
+        address = parse.urlparse(sentry_dsn).netloc.split("@")[-1]
+        config = {
+            'WEB_SERVER_ADDRESS': address
+        }
+
+        container = container_factory(SentryStub, config)
+        container.start()
+
+        return container
+
+    @pytest.fixture
+    def config(self, config, sentry_dsn):
+        config['SENTRY']['DSN'] = sentry_dsn
+        return config
+
+    def test_end_to_end(
+        self, container_factory, service_cls, config, sentry_stub, tracker
+    ):
+
+        container = container_factory(service_cls, config)
+        container.start()
+
+        with entrypoint_waiter(sentry_stub, 'report'):
+            with entrypoint_hook(container, 'broken') as broken:
+                with entrypoint_waiter(container, 'broken'):
+                    with pytest.raises(CustomException):
+                        broken()
+
+        assert tracker.called
