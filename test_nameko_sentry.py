@@ -167,6 +167,29 @@ def test_worker_exception(
     assert kwargs['data'] == expected_data
 
 
+@pytest.mark.parametrize("exception_cls,expected_count", [
+    (CustomException, 0),
+    (KeyError, 1)
+])
+def test_expected_exception_not_reported(
+    exception_cls, expected_count, config, worker_ctx
+):
+
+    exc = exception_cls("Error!")
+    exc_info = (exception_cls, exc, None)
+
+    config['SENTRY']['REPORT_EXPECTED_EXCEPTIONS'] = False
+    container = Mock(config=config)
+
+    reporter = SentryReporter().bind(container, "sentry")
+    reporter.setup()
+
+    with patch.object(reporter.client, 'captureException') as capture:
+        reporter.worker_result(worker_ctx, None, exc_info)
+
+    assert capture.call_count == expected_count
+
+
 @patch.object(EventletHTTPTransport, '_send_payload')
 def test_raven_transport_does_not_affect_container(
     send_mock, container_factory, service_cls, config
