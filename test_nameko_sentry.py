@@ -6,8 +6,6 @@ from eventlet.event import Event
 from mock import Mock, patch
 from nameko.containers import WorkerContext
 from nameko.extensions import Entrypoint
-from nameko.rpc import rpc
-from nameko.standalone.rpc import ServiceRpcProxy
 from nameko.testing.services import dummy, entrypoint_hook, entrypoint_waiter
 from nameko.web.handlers import http
 from nameko_sentry import SentryReporter
@@ -53,11 +51,11 @@ def container(config):
     return Mock(config=config)
 
 
-@pytest.fixture(params=[tuple(), CustomException])  # expected exceptions
-def worker_ctx(request, container):
+@pytest.fixture
+def worker_ctx(container):
 
     service = Mock()
-    entrypoint = Mock(spec=Entrypoint, expected_exceptions=request.param)
+    entrypoint = Mock(spec=Entrypoint, expected_exceptions=CustomException)
     args = ("a", "b", "c")
     kwargs = {"d": "d", "e": "e"}
     data = {
@@ -129,35 +127,36 @@ def test_worker_result(reporter, worker_ctx):
     assert reporter.client.captureException.call_count == 0
 
 
-def test_worker_exception(reporter, worker_ctx):
-
-    exc = CustomException("Error!")
-    exc_info = (CustomException, exc, None)
+@pytest.mark.parametrize("exception_cls,expected_level", [
+    (CustomException, logging.WARNING),
+    (KeyError, logging.ERROR)
+])
+def test_worker_exception(
+    exception_cls, expected_level, reporter, worker_ctx
+):
+    exc = exception_cls("Error!")
+    exc_info = (exception_cls, exc, None)
 
     reporter.setup()
     reporter.worker_result(worker_ctx, None, exc_info)
 
     # generate expected call args
-    logger = "{}.{}".format(
-        worker_ctx.service_name, worker_ctx.entrypoint.method_name)
+    expected_logger = "{}.{}".format(
+        worker_ctx.service_name, worker_ctx.entrypoint.method_name
+    )
     expected_message = "Unhandled exception in call {}: {} {!r}".format(
-        worker_ctx.call_id, CustomException.__name__, str(exc)
+        worker_ctx.call_id, exception_cls.__name__, str(exc)
     )
     expected_extra = {'exc': exc}
-
-    if isinstance(exc, worker_ctx.entrypoint.expected_exceptions):
-        loglevel = logging.WARNING
-    else:
-        loglevel = logging.ERROR
-
+    expected_tags = {
+        'call_id': worker_ctx.call_id,
+        'parent_call_id': worker_ctx.immediate_parent_call_id
+    }
     expected_data = {
-        'logger': logger,
-        'level': loglevel,
+        'logger': expected_logger,
+        'level': expected_level,
         'message': expected_message,
-        'tags': {
-            'call_id': worker_ctx.call_id,
-            'parent_call_id': worker_ctx.immediate_parent_call_id
-        }
+        'tags': expected_tags
     }
 
     assert reporter.client.captureException.call_count == 1
