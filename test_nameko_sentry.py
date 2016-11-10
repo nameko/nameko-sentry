@@ -6,11 +6,14 @@ from eventlet.event import Event
 from mock import Mock, patch
 from nameko.containers import WorkerContext
 from nameko.extensions import Entrypoint
+from nameko.rpc import rpc
+from nameko.standalone.rpc import ServiceRpcProxy
 from nameko.testing.services import dummy, entrypoint_hook, entrypoint_waiter
 from nameko.web.handlers import http
 from nameko_sentry import SentryReporter
 from raven import Client
 from raven.transport.eventlet import EventletHTTPTransport
+
 from six.moves.urllib import parse
 
 
@@ -75,7 +78,7 @@ def reporter(container):
         yield SentryReporter().bind(container, "sentry")
 
 
-def test_setup(reporter, config):
+def test_setup(reporter):
     reporter.setup()
 
     # client config and DSN applied correctly
@@ -88,7 +91,7 @@ def test_setup(reporter, config):
     assert isinstance(transport, EventletHTTPTransport)
 
 
-def test_setup_without_optional_config(request, config):
+def test_setup_without_optional_config(config):
 
     del config['SENTRY']['CLIENT_CONFIG']
     container = Mock(config=config)
@@ -216,7 +219,7 @@ class TestEndToEnd(object):
 
             @http('POST', "/api/1/store/")
             def report(self, request):
-                tracker(request)
+                tracker(request.get_data())
                 return 200, "OK"
 
         address = parse.urlparse(sentry_dsn).netloc.split("@")[-1]
