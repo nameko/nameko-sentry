@@ -6,8 +6,11 @@ from eventlet.event import Event
 from mock import ANY, Mock, patch
 from nameko.containers import WorkerContext
 from nameko.extensions import Entrypoint
+from nameko.exceptions import RemoteError
+from nameko.rpc import rpc
+from nameko.standalone.rpc import ServiceRpcProxy
 from nameko.testing.services import (
-    dummy, entrypoint_hook, entrypoint_waiter, get_extension)
+    entrypoint_hook, entrypoint_waiter, get_extension)
 from nameko.web.handlers import HttpRequestHandler, http
 from nameko_sentry import SentryReporter
 from raven import Client
@@ -20,15 +23,17 @@ class CustomException(Exception):
 
 
 @pytest.fixture
-def config():
-    return {
+def config(rabbit_config):
+    config = rabbit_config
+    config.update({
         'SENTRY': {
             'DSN': 'eventlet+http://user:pass@localhost:9000/1',
             'CLIENT_CONFIG': {
                 'site': 'site name'
             }
         }
-    }
+    })
+    return config
 
 
 @pytest.fixture
@@ -39,7 +44,7 @@ def service_cls():
 
         sentry = SentryReporter()
 
-        @dummy
+        @rpc
         def broken(self):
             raise CustomException("Error!")
 
@@ -198,9 +203,14 @@ def test_expected_exception_not_reported(
     assert capture.call_count == expected_count
 
 
-class TestContext(object):
+class TestUserContext(object):
 
-    def test_user_defaults(self, reporter, worker_ctx):
+    @pytest.yield_fixture(autouse=True)
+    def patched_sentry(self):
+        with patch.object(Client, 'captureException'):
+            yield
+
+    def test_user_defaults(self, container_factory, service_cls, config):
 
         user_data = {
             'user': 'matt',
@@ -210,36 +220,37 @@ class TestContext(object):
             'email_address': 'matt@example.com',
             'session_id': 1
         }
-        non_user_data = {
+
+        container = container_factory(service_cls, config)
+        container.start()
+
+        context_data = {
             'language': 'en-gb'
         }
+        context_data.update(user_data)
 
-        worker_ctx.data.update(user_data)
-        worker_ctx.data.update(non_user_data)
+        with ServiceRpcProxy(
+            'service', config, context_data=context_data
+        ) as rpc_proxy:
+            with pytest.raises(RemoteError):
+                rpc_proxy.broken()
 
-        exc = CustomException("Error!")
-        exc_info = (CustomException, exc, None)
+        sentry = get_extension(container, SentryReporter)
 
-        reporter.setup()
-        reporter.worker_result(worker_ctx, None, exc_info)
+        assert sentry.client.captureException.call_count == 1
 
-        assert reporter.client.captureException.call_count == 1
-
-        _, kwargs = reporter.client.captureException.call_args
+        _, kwargs = sentry.client.captureException.call_args
         assert kwargs['data']['user'] == user_data
-        for key in non_user_data:
-            assert key not in kwargs['data']['user']
 
-    def test_user_custom(self, config, worker_ctx):
+    def test_user_custom(self, container_factory, service_cls, config):
 
         config['SENTRY']['USER_TYPE_CONTEXT_KEYS'] = (
             'user|email',  # excludes session
             'other_pattern'
         )
-        container = Mock(config=config)
 
-        reporter = SentryReporter().bind(container, "sentry")
-        reporter.setup()
+        container = container_factory(service_cls, config)
+        container.start()
 
         user_data = {
             'user': 'matt',
@@ -248,114 +259,132 @@ class TestContext(object):
             'email': 'matt@example.com',
             'email_address': 'matt@example.com',
         }
-        non_user_data = {
+
+        context_data = {
             'session_id': 1,  # exclude session
             'language': 'en-gb'
         }
+        context_data.update(user_data)
 
-        worker_ctx.data.update(user_data)
-        worker_ctx.data.update(non_user_data)
+        with ServiceRpcProxy(
+            'service', config, context_data=context_data
+        ) as rpc_proxy:
+            with pytest.raises(RemoteError):
+                rpc_proxy.broken()
 
-        exc = CustomException("Error!")
-        exc_info = (CustomException, exc, None)
+        sentry = get_extension(container, SentryReporter)
 
-        reporter.setup()
-        with patch.object(reporter.client, 'captureException') as capture:
-            reporter.worker_result(worker_ctx, None, exc_info)
+        assert sentry.client.captureException.call_count == 1
 
-        assert capture.call_count == 1
-
-        _, kwargs = capture.call_args
+        _, kwargs = sentry.client.captureException.call_args
         assert kwargs['data']['user'] == user_data
-        for key in non_user_data:
-            assert key not in kwargs['data']['user']
 
-    def test_tags_defaults(self, reporter, worker_ctx):
 
-        default_tags = {
-            'call_id': worker_ctx.call_id,
-            'parent_call_id': worker_ctx.immediate_parent_call_id,
-            'service_name': worker_ctx.container.service_name,
-            'method_name': worker_ctx.entrypoint.method_name
+@pytest.mark.usefixtures('predictable_call_ids')
+class TestExtraContext(object):
+
+    @pytest.yield_fixture(autouse=True)
+    def patched_sentry(self):
+        with patch.object(Client, 'captureException'):
+            yield
+
+    def test_extra(self, container_factory, service_cls, config):
+
+        container = container_factory(service_cls, config)
+        container.start()
+
+        context_data = {
+            'language': 'en-gb'
         }
 
-        exc = CustomException("Error!")
-        exc_info = (CustomException, exc, None)
+        with ServiceRpcProxy(
+            'service', config, context_data=context_data
+        ) as rpc_proxy:
+            with pytest.raises(RemoteError):
+                rpc_proxy.broken()
 
-        reporter.setup()
-        reporter.worker_result(worker_ctx, None, exc_info)
+        sentry = get_extension(container, SentryReporter)
 
-        assert reporter.client.captureException.call_count == 1
+        assert sentry.client.captureException.call_count == 1
 
-        _, kwargs = reporter.client.captureException.call_args
-        assert kwargs['data']['tags'] == default_tags
+        expected_extra = {
+            'call_id_stack': [
+                'standalone_rpc_proxy.call.0', 'service.broken.1'
+            ],
+            'language': 'en-gb'
+        }
 
-    def test_tags_custom(self, config, worker_ctx):
+        _, kwargs = sentry.client.captureException.call_args
+        assert kwargs['extra'] == expected_extra
+
+
+@pytest.mark.usefixtures('predictable_call_ids')
+class TestTagContext(object):
+
+    @pytest.yield_fixture(autouse=True)
+    def patched_sentry(self):
+        with patch.object(Client, 'captureException'):
+            yield
+
+    def test_tags_defaults(self, container_factory, service_cls, config):
+
+        container = container_factory(service_cls, config)
+        container.start()
+
+        with ServiceRpcProxy('service', config) as rpc_proxy:
+            with pytest.raises(RemoteError):
+                rpc_proxy.broken()
+
+        sentry = get_extension(container, SentryReporter)
+
+        assert sentry.client.captureException.call_count == 1
+
+        expected_tags = {
+            'call_id': 'service.broken.1',
+            'parent_call_id': 'standalone_rpc_proxy.call.0',
+            'service_name': 'service',
+            'method_name': 'broken'
+        }
+
+        _, kwargs = sentry.client.captureException.call_args
+        assert kwargs['data']['tags'] == expected_tags
+
+    def test_tags_custom(self, container_factory, service_cls, config):
 
         config['SENTRY']['TAG_TYPE_CONTEXT_KEYS'] = (
             'session',
             'other_pattern'
         )
-        container = Mock(config=config)
 
-        reporter = SentryReporter().bind(container, "sentry")
-        reporter.setup()
+        container = container_factory(service_cls, config)
+        container.start()
 
         context_data = {
-            'user': 'matt',
-            'username': 'matt',
-            'user_id': 1,
-            'email': 'matt@example.com',
+            'call_id_stack': ["standalone_rpc_proxy.call.0"],
+            'session_id': 1,
             'email_address': 'matt@example.com',
-            'session_id': 1,
         }
 
-        worker_ctx.data.update(context_data)
+        with ServiceRpcProxy(
+            'service', config, context_data=context_data
+        ) as rpc_proxy:
+            with pytest.raises(RemoteError):
+                rpc_proxy.broken()
 
-        default_tags = {
-            'call_id': worker_ctx.call_id,
-            'parent_call_id': worker_ctx.immediate_parent_call_id,
-            'service_name': worker_ctx.container.service_name,
-            'method_name': worker_ctx.entrypoint.method_name
+        sentry = get_extension(container, SentryReporter)
+
+        assert sentry.client.captureException.call_count == 1
+
+        expected_tags = {
+            'call_id': 'service.broken.1',
+            'parent_call_id': 'standalone_rpc_proxy.call.0',
+            'service_name': 'service',
+            'method_name': 'broken',
+            'session_id': 1,  # extra
         }
-        additional_tags = {
-            'session_id': 1
-        }
-        expected_tags = default_tags.copy()
-        expected_tags.update(additional_tags)
 
-        exc = CustomException("Error!")
-        exc_info = (CustomException, exc, None)
-
-        reporter.setup()
-        with patch.object(reporter.client, 'captureException') as capture:
-            reporter.worker_result(worker_ctx, None, exc_info)
-
-        assert capture.call_count == 1
-
-        _, kwargs = capture.call_args
+        _, kwargs = sentry.client.captureException.call_args
         assert kwargs['data']['tags'] == expected_tags
-
-    def test_extra(self, reporter, worker_ctx):
-
-        extra_data = {
-            'session_id': 1,
-            'locale': 'en-gb'
-        }
-
-        worker_ctx.data.update(extra_data)
-
-        exc = CustomException("Error!")
-        exc_info = (CustomException, exc, None)
-
-        reporter.setup()
-        reporter.worker_result(worker_ctx, None, exc_info)
-
-        assert reporter.client.captureException.call_count == 1
-
-        _, kwargs = reporter.client.captureException.call_args
-        for key, value in extra_data.items():
-            assert kwargs['extra'][key] == value
 
 
 class TestHttpContext(object):
