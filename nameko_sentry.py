@@ -1,7 +1,22 @@
 import logging
+import re
 
 from nameko.extensions import DependencyProvider
+from nameko.web.handlers import HttpRequestHandler
 from raven import Client
+from raven.utils.encoding import to_unicode
+from raven.utils.wsgi import get_environ, get_headers
+from werkzeug.exceptions import ClientDisconnected
+
+from six.moves.urllib import parse
+
+
+USER_TYPE_CONTEXT_KEYS = (
+    re.compile("user|email|session"),
+)
+TAG_TYPE_CONTEXT_KEYS = (
+    re.compile("call_id$"),
+)
 
 
 class SentryReporter(DependencyProvider):
@@ -12,12 +27,21 @@ class SentryReporter(DependencyProvider):
 
         dsn = sentry_config['DSN']
         kwargs = sentry_config.get('CLIENT_CONFIG', {})
+        self.client = Client(dsn, **kwargs)
+
         report_expected_exceptions = sentry_config.get(
             'REPORT_EXPECTED_EXCEPTIONS', True
         )
+        user_type_context_keys = sentry_config.get(
+            'USER_TYPE_CONTEXT_KEYS', USER_TYPE_CONTEXT_KEYS
+        )
+        tag_type_context_keys = sentry_config.get(
+            'TAG_TYPE_CONTEXT_KEYS', TAG_TYPE_CONTEXT_KEYS
+        )
 
-        self.client = Client(dsn, **kwargs)
         self.report_expected_exceptions = report_expected_exceptions
+        self.user_type_context_keys = user_type_context_keys
+        self.tag_type_context_keys = tag_type_context_keys
 
     def format_message(self, worker_ctx, exc_info):
         exc_type, exc, _ = exc_info
@@ -32,17 +56,75 @@ class SentryReporter(DependencyProvider):
             worker_ctx.entrypoint, 'expected_exceptions', tuple())
         return isinstance(exc, expected_exceptions)
 
-    def build_tags(self, worker_ctx, exc_info):
-        return {
+    def http_context(self, worker_ctx, exc_info):
+        """ Attempt to extract HTTP context if an HTTP entrypoint was used.
+        """
+        http = {}
+        if isinstance(worker_ctx.entrypoint, HttpRequestHandler):
+            try:
+                request = worker_ctx.args[0]
+
+                try:
+                    if request.mimetype == 'application/json':
+                        data = request.data
+                    else:
+                        data = request.form
+                except ClientDisconnected:
+                    data = {}
+
+                urlparts = parse.urlsplit(request.url)
+                http.update({
+                    'url': '{}://{}{}'.format(
+                        urlparts.scheme, urlparts.netloc, urlparts.path
+                    ),
+                    'query_string': urlparts.query,
+                    'method': request.method,
+                    'data': data,
+                    'headers': dict(get_headers(request.environ)),
+                    'env': dict(get_environ(request.environ)),
+                })
+            except:
+                pass  # probably not a compatible entrypoint
+        return http
+
+    def user_context(self, worker_ctx, exc_info):
+        """ Return any user context to include in the sentry payload.
+
+        Extracts user identifiers from the worker context data by matching
+        context keys with
+        """
+        user = {}
+        for key in worker_ctx.context_data:
+            for matcher in self.user_type_context_keys:
+                if re.search(matcher, key):
+                    user[key] = worker_ctx.context_data[key]
+                    break
+        return user
+
+    def tags_context(self, worker_ctx, exc_info):
+        """ Return any tags to include in the sentry payload.
+        """
+        tags = {
             'call_id': worker_ctx.call_id,
             'parent_call_id': worker_ctx.immediate_parent_call_id,
+            'service_name': worker_ctx.container.service_name,
+            'method_name': worker_ctx.entrypoint.method_name
         }
+        for key in worker_ctx.context_data:
+            for matcher in self.tag_type_context_keys:
+                if re.search(matcher, key):
+                    tags[key] = worker_ctx.context_data[key]
+                    break
+        return tags
 
-    def build_extra(self, worker_ctx, exc_info):
-        _, exc, _ = exc_info
-        return {
-            'exc': exc
-        }
+    def extra_context(self, worker_ctx, exc_info):
+        """ Return any extra context to include in the sentry payload.
+
+        Includes all available worker context data.
+        """
+        extra = {}
+        extra.update(worker_ctx.context_data)
+        return extra
 
     def worker_result(self, worker_ctx, result, exc_info):
         if exc_info is None:
@@ -50,6 +132,8 @@ class SentryReporter(DependencyProvider):
         self.capture_exception(worker_ctx, exc_info)
 
     def capture_exception(self, worker_ctx, exc_info):
+
+        message = self.format_message(worker_ctx, exc_info)
 
         logger = '{}.{}'.format(
             worker_ctx.service_name, worker_ctx.entrypoint.method_name
@@ -62,15 +146,17 @@ class SentryReporter(DependencyProvider):
         else:
             level = logging.ERROR
 
-        message = self.format_message(worker_ctx, exc_info)
-        extra = self.build_extra(worker_ctx, exc_info)
-        tags = self.build_tags(worker_ctx, exc_info)
+        user = self.user_context(worker_ctx, exc_info)
+        tags = self.tags_context(worker_ctx, exc_info)
+        http = self.http_context(worker_ctx, exc_info)
+        extra = self.extra_context(worker_ctx, exc_info)
 
         data = {
             'logger': logger,
             'level': level,
-            'message': message,
-            'tags': tags
+            'user': user,
+            'tags': tags,
+            'request': http
         }
 
         self.client.captureException(

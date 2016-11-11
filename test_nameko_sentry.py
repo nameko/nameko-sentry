@@ -47,19 +47,22 @@ def service_cls():
 
 
 @pytest.fixture
-def container(config):
-    return Mock(config=config)
+def container(config, service_cls, predictable_call_ids):
+    return Mock(service_name=service_cls.name, config=config)
 
 
 @pytest.fixture
 def worker_ctx(container):
 
     service = Mock()
-    entrypoint = Mock(spec=Entrypoint, expected_exceptions=CustomException)
+    entrypoint = Mock(
+        spec=Entrypoint,
+        method_name="entrypoint",
+        expected_exceptions=CustomException
+    )
     args = ("a", "b", "c")
     kwargs = {"d": "d", "e": "e"}
     data = {
-        'call_id': 'service.entrypoint.1',
         'call_id_stack': [
             'standalone_rpc_proxy.call.0'
         ]
@@ -89,10 +92,10 @@ def test_setup(reporter):
     assert isinstance(transport, EventletHTTPTransport)
 
 
-def test_setup_without_optional_config(config):
+def test_setup_without_optional_config(service_cls, config):
 
     del config['SENTRY']['CLIENT_CONFIG']
-    container = Mock(config=config)
+    container = Mock(service_name=service_cls.name, config=config)
 
     reporter = SentryReporter().bind(container, "sentry")
     reporter.setup()
@@ -147,16 +150,21 @@ def test_worker_exception(
     expected_message = "Unhandled exception in call {}: {} {!r}".format(
         worker_ctx.call_id, exception_cls.__name__, str(exc)
     )
-    expected_extra = {'exc': exc}
+    expected_extra = worker_ctx.context_data
     expected_tags = {
         'call_id': worker_ctx.call_id,
-        'parent_call_id': worker_ctx.immediate_parent_call_id
+        'parent_call_id': worker_ctx.immediate_parent_call_id,
+        'service_name': worker_ctx.container.service_name,
+        'method_name': worker_ctx.entrypoint.method_name
     }
+    expected_user = {}
+    expected_http = {}
     expected_data = {
         'logger': expected_logger,
         'level': expected_level,
-        'message': expected_message,
-        'tags': expected_tags
+        'tags': expected_tags,
+        'user': expected_user,
+        'request': expected_http
     }
 
     assert reporter.client.captureException.call_count == 1
@@ -188,6 +196,172 @@ def test_expected_exception_not_reported(
         reporter.worker_result(worker_ctx, None, exc_info)
 
     assert capture.call_count == expected_count
+
+
+class TestContext(object):
+
+    def test_user_defaults(self, reporter, worker_ctx):
+
+        user_data = {
+            'user': 'matt',
+            'username': 'matt',
+            'user_id': 1,
+            'email': 'matt@example.com',
+            'email_address': 'matt@example.com',
+            'session_id': 1
+        }
+        non_user_data = {
+            'language': 'en-gb'
+        }
+
+        worker_ctx.data.update(user_data)
+        worker_ctx.data.update(non_user_data)
+
+        exc = CustomException("Error!")
+        exc_info = (CustomException, exc, None)
+
+        reporter.setup()
+        reporter.worker_result(worker_ctx, None, exc_info)
+
+        assert reporter.client.captureException.call_count == 1
+
+        _, kwargs = reporter.client.captureException.call_args
+        assert kwargs['data']['user'] == user_data
+        for key in non_user_data:
+            assert key not in kwargs['data']['user']
+
+    def test_user_custom(self, config, worker_ctx):
+
+        config['SENTRY']['USER_TYPE_CONTEXT_KEYS'] = (
+            'user|email',  # excludes session
+            'other_pattern'
+        )
+        container = Mock(config=config)
+
+        reporter = SentryReporter().bind(container, "sentry")
+        reporter.setup()
+
+        user_data = {
+            'user': 'matt',
+            'username': 'matt',
+            'user_id': 1,
+            'email': 'matt@example.com',
+            'email_address': 'matt@example.com',
+        }
+        non_user_data = {
+            'session_id': 1,  # exclude session
+            'language': 'en-gb'
+        }
+
+        worker_ctx.data.update(user_data)
+        worker_ctx.data.update(non_user_data)
+
+        exc = CustomException("Error!")
+        exc_info = (CustomException, exc, None)
+
+        reporter.setup()
+        with patch.object(reporter.client, 'captureException') as capture:
+            reporter.worker_result(worker_ctx, None, exc_info)
+
+        assert capture.call_count == 1
+
+        _, kwargs = capture.call_args
+        assert kwargs['data']['user'] == user_data
+        for key in non_user_data:
+            assert key not in kwargs['data']['user']
+
+    def test_tags_defaults(self, reporter, worker_ctx):
+
+        default_tags = {
+            'call_id': worker_ctx.call_id,
+            'parent_call_id': worker_ctx.immediate_parent_call_id,
+            'service_name': worker_ctx.container.service_name,
+            'method_name': worker_ctx.entrypoint.method_name
+        }
+
+        exc = CustomException("Error!")
+        exc_info = (CustomException, exc, None)
+
+        reporter.setup()
+        reporter.worker_result(worker_ctx, None, exc_info)
+
+        assert reporter.client.captureException.call_count == 1
+
+        _, kwargs = reporter.client.captureException.call_args
+        assert kwargs['data']['tags'] == default_tags
+
+    def test_tags_custom(self, config, worker_ctx):
+
+        config['SENTRY']['TAG_TYPE_CONTEXT_KEYS'] = (
+            'session',
+            'other_pattern'
+        )
+        container = Mock(config=config)
+
+        reporter = SentryReporter().bind(container, "sentry")
+        reporter.setup()
+
+        context_data = {
+            'user': 'matt',
+            'username': 'matt',
+            'user_id': 1,
+            'email': 'matt@example.com',
+            'email_address': 'matt@example.com',
+            'session_id': 1,
+        }
+
+        worker_ctx.data.update(context_data)
+
+        default_tags = {
+            'call_id': worker_ctx.call_id,
+            'parent_call_id': worker_ctx.immediate_parent_call_id,
+            'service_name': worker_ctx.container.service_name,
+            'method_name': worker_ctx.entrypoint.method_name
+        }
+        additional_tags = {
+            'session_id': 1
+        }
+        expected_tags = default_tags.copy()
+        expected_tags.update(additional_tags)
+
+        exc = CustomException("Error!")
+        exc_info = (CustomException, exc, None)
+
+        reporter.setup()
+        with patch.object(reporter.client, 'captureException') as capture:
+            reporter.worker_result(worker_ctx, None, exc_info)
+
+        assert capture.call_count == 1
+
+        _, kwargs = capture.call_args
+        assert kwargs['data']['tags'] == expected_tags
+
+    def test_http(self, reporter, worker_ctx):
+        pass
+
+    def test_http_unsupported_entrypoint(self, reporter, worker_ctx):
+        pass
+
+    def test_extra(self, reporter, worker_ctx):
+
+        extra_data = {
+            'session_id': 1,
+            'locale': 'en-gb'
+        }
+
+        worker_ctx.data.update(extra_data)
+
+        exc = CustomException("Error!")
+        exc_info = (CustomException, exc, None)
+
+        reporter.setup()
+        reporter.worker_result(worker_ctx, None, exc_info)
+
+        assert reporter.client.captureException.call_count == 1
+
+        _, kwargs = reporter.client.captureException.call_args
+        for key, value in extra_data.items():
+            assert kwargs['extra'][key] == value
 
 
 @patch.object(EventletHTTPTransport, '_send_payload')
