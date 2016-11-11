@@ -3,15 +3,15 @@ import socket
 
 import pytest
 from eventlet.event import Event
-from mock import Mock, patch
+from mock import ANY, Mock, patch
 from nameko.containers import WorkerContext
 from nameko.extensions import Entrypoint
-from nameko.testing.services import dummy, entrypoint_hook, entrypoint_waiter
-from nameko.web.handlers import http
+from nameko.testing.services import (
+    dummy, entrypoint_hook, entrypoint_waiter, get_extension)
+from nameko.web.handlers import HttpRequestHandler, http
 from nameko_sentry import SentryReporter
 from raven import Client
 from raven.transport.eventlet import EventletHTTPTransport
-
 from six.moves.urllib import parse
 
 
@@ -336,12 +336,6 @@ class TestContext(object):
         _, kwargs = capture.call_args
         assert kwargs['data']['tags'] == expected_tags
 
-    def test_http(self, reporter, worker_ctx):
-        pass
-
-    def test_http_unsupported_entrypoint(self, reporter, worker_ctx):
-        pass
-
     def test_extra(self, reporter, worker_ctx):
 
         extra_data = {
@@ -362,6 +356,89 @@ class TestContext(object):
         _, kwargs = reporter.client.captureException.call_args
         for key, value in extra_data.items():
             assert kwargs['extra'][key] == value
+
+
+class TestHttpContext(object):
+
+    @pytest.yield_fixture(autouse=True)
+    def patched_sentry(self):
+        with patch.object(Client, 'captureException'):
+            yield
+
+    @pytest.fixture
+    def config(self, config, web_config):
+        config.update(web_config)
+        return config
+
+    def test_normal_http_entrypoint(
+        self, container_factory, config, web_session
+    ):
+        class Service(object):
+            name = "service"
+
+            sentry = SentryReporter()
+
+            @http('GET', '/resource')
+            def resource(self, request):
+                raise CustomException()
+
+        container = container_factory(Service, config)
+        container.start()
+
+        with entrypoint_waiter(container, 'resource'):
+            web_session.get('/resource')
+
+        sentry = get_extension(container, SentryReporter)
+
+        assert sentry.client.captureException.call_count == 1
+        _, kwargs = sentry.client.captureException.call_args
+
+        expected_http = {
+            'url': ANY,
+            'query_string': "",
+            'method': 'GET',
+            'data': {},
+            'headers': ANY,
+            'env': ANY
+        }
+        assert kwargs['data']['request'] == expected_http
+
+    def test_unsupported_http_entrypoint(
+        self, container_factory, config, web_session
+    ):
+        bogus = object()
+
+        class CustomHttpEntrypoint(HttpRequestHandler):
+
+            def get_entrypoint_parameters(self, request):
+                args = (bogus, request)
+                kwargs = request.path_values
+                return args, kwargs
+
+        custom_http = CustomHttpEntrypoint.decorator
+
+        class Service(object):
+            name = "service"
+
+            sentry = SentryReporter()
+
+            @custom_http('GET', '/resource')
+            def resource(self, bogus_arg, request):
+                raise CustomException()
+
+        container = container_factory(Service, config)
+        container.start()
+
+        with entrypoint_waiter(container, 'resource'):
+            web_session.get('/resource')
+
+        sentry = get_extension(container, SentryReporter)
+
+        assert sentry.client.captureException.call_count == 1
+        _, kwargs = sentry.client.captureException.call_args
+
+        expected_http = {}
+        assert kwargs['data']['request'] == expected_http
 
 
 @patch.object(EventletHTTPTransport, '_send_payload')
