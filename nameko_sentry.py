@@ -4,11 +4,10 @@ import re
 from nameko.extensions import DependencyProvider
 from nameko.web.handlers import HttpRequestHandler
 from raven import Client
-from raven.utils.encoding import to_unicode
 from raven.utils.wsgi import get_environ, get_headers
 from werkzeug.exceptions import ClientDisconnected
 
-from six.moves.urllib import parse
+from six.moves.urllib.parse import urlsplit  # pylint: disable=E0401
 
 
 USER_TYPE_CONTEXT_KEYS = (
@@ -72,7 +71,7 @@ class SentryReporter(DependencyProvider):
                 except ClientDisconnected:
                     data = {}
 
-                urlparts = parse.urlsplit(request.url)
+                urlparts = urlsplit(request.url)
                 http.update({
                     'url': '{}://{}{}'.format(
                         urlparts.scheme, urlparts.netloc, urlparts.path
