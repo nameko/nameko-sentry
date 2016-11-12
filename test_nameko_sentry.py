@@ -4,8 +4,6 @@ import socket
 import pytest
 from eventlet.event import Event
 from mock import ANY, Mock, patch
-from nameko.containers import WorkerContext
-from nameko.extensions import Entrypoint
 from nameko.exceptions import RemoteError
 from nameko.rpc import rpc
 from nameko.standalone.rpc import ServiceRpcProxy
@@ -24,7 +22,7 @@ class CustomException(Exception):
 
 @pytest.fixture
 def config(rabbit_config):
-    config = rabbit_config
+    config = rabbit_config.copy()
     config.update({
         'SENTRY': {
             'DSN': 'eventlet+http://user:pass@localhost:9000/1',
@@ -44,171 +42,180 @@ def service_cls():
 
         sentry = SentryReporter()
 
-        @rpc
+        @rpc(expected_exceptions=CustomException)
         def broken(self):
             raise CustomException("Error!")
+
+        @rpc
+        def fine(self):
+            return "OK"
 
     return Service
 
 
-@pytest.fixture
-def container(config, service_cls, predictable_call_ids):
-    return Mock(service_name=service_cls.name, config=config)
-
-
-@pytest.fixture
-def worker_ctx(container):
-
-    service = Mock()
-    entrypoint = Mock(
-        spec=Entrypoint,
-        method_name="entrypoint",
-        expected_exceptions=CustomException
-    )
-    args = ("a", "b", "c")
-    kwargs = {"d": "d", "e": "e"}
-    data = {
-        'call_id_stack': [
-            'standalone_rpc_proxy.call.0'
-        ]
-    }
-
-    return WorkerContext(
-        container, service, entrypoint, args=args, kwargs=kwargs, data=data
-    )
-
-
 @pytest.yield_fixture
-def reporter(container):
+def patched_sentry():
     with patch.object(Client, 'captureException'):
-        yield SentryReporter().bind(container, "sentry")
+        yield
 
 
-def test_setup(reporter):
-    reporter.setup()
+@pytest.mark.usefixtures('patched_sentry')
+def test_setup(container_factory, service_cls, config):
+
+    container = container_factory(service_cls, config)
+    container.start()
+
+    sentry = get_extension(container, SentryReporter)
 
     # client config and DSN applied correctly
-    assert reporter.client.site == "site name"
-    assert reporter.client.get_public_dsn() == "//user@localhost:9000/1"
-    assert reporter.client.is_enabled()
+    assert sentry.client.site == "site name"
+    assert sentry.client.get_public_dsn() == "//user@localhost:9000/1"
+    assert sentry.client.is_enabled()
 
     # transport set correctly
-    transport = reporter.client.remote.get_transport()
+    transport = sentry.client.remote.get_transport()
     assert isinstance(transport, EventletHTTPTransport)
 
 
-def test_setup_without_optional_config(service_cls, config):
+@pytest.mark.usefixtures('patched_sentry')
+def test_setup_without_optional_config(container_factory, service_cls, config):
 
     del config['SENTRY']['CLIENT_CONFIG']
-    container = Mock(service_name=service_cls.name, config=config)
 
-    reporter = SentryReporter().bind(container, "sentry")
-    reporter.setup()
+    container = container_factory(service_cls, config)
+    container.start()
+
+    sentry = get_extension(container, SentryReporter)
 
     # DSN applied correctly
-    assert reporter.client.get_public_dsn() == "//user@localhost:9000/1"
-    assert reporter.client.is_enabled()
+    assert sentry.client.get_public_dsn() == "//user@localhost:9000/1"
+    assert sentry.client.is_enabled()
 
     # transport set correctly
-    transport = reporter.client.remote.get_transport()
+    transport = sentry.client.remote.get_transport()
     assert isinstance(transport, EventletHTTPTransport)
 
 
-def test_disabled(config):
-    config['SENTRY']['DSN'] = None
-    container = Mock(config=config)
+@pytest.mark.usefixtures('patched_sentry')
+def test_disabled(container_factory, service_cls, config):
 
-    reporter = SentryReporter().bind(container, "sentry")
-    reporter.setup()
+    config['SENTRY']['DSN'] = None
+
+    container = container_factory(service_cls, config)
+    container.start()
+
+    sentry = get_extension(container, SentryReporter)
 
     # DSN applied correctly
-    assert reporter.client.get_public_dsn() is None
-    assert not reporter.client.is_enabled()
+    assert sentry.client.get_public_dsn() is None
+    assert not sentry.client.is_enabled()
 
 
-def test_worker_result(reporter, worker_ctx):
-    result = "OK!"
+@pytest.mark.usefixtures('patched_sentry')
+def test_worker_result(container_factory, service_cls, config):
+    container = container_factory(service_cls, config)
+    container.start()
 
-    reporter.setup()
-    reporter.worker_result(worker_ctx, result, None)
+    with entrypoint_hook(container, 'fine') as fine:
+        with entrypoint_waiter(container, 'fine'):
+            assert fine() == "OK"
 
-    assert reporter.client.captureException.call_count == 0
+    sentry = get_extension(container, SentryReporter)
+
+    assert sentry.client.captureException.call_count == 0
 
 
+@pytest.mark.usefixtures('patched_sentry', 'predictable_call_ids')
 @pytest.mark.parametrize("exception_cls,expected_level", [
     (CustomException, logging.WARNING),
     (KeyError, logging.ERROR)
 ])
 def test_worker_exception(
-    exception_cls, expected_level, reporter, worker_ctx
+    exception_cls, expected_level, container_factory, config
 ):
-    exc = exception_cls("Error!")
-    exc_info = (exception_cls, exc, None)
 
-    reporter.setup()
-    reporter.worker_result(worker_ctx, None, exc_info)
+    class Service(object):
+        name = "service"
+
+        sentry = SentryReporter()
+
+        @rpc(expected_exceptions=CustomException)
+        def broken(self):
+            raise exception_cls("Error!")
+
+    container = container_factory(Service, config)
+    container.start()
+
+    with entrypoint_waiter(container, 'broken') as result:
+        with ServiceRpcProxy('service', config) as rpc_proxy:
+            with pytest.raises(RemoteError):
+                rpc_proxy.broken()
+
+        with pytest.raises(exception_cls) as raised:
+            result.get()
+
+    sentry = get_extension(container, SentryReporter)
+
+    assert sentry.client.captureException.call_count == 1
 
     # generate expected call args
-    expected_logger = "{}.{}".format(
-        worker_ctx.service_name, worker_ctx.entrypoint.method_name
-    )
+    expected_logger = "service.broken"
     expected_message = "Unhandled exception in call {}: {} {!r}".format(
-        worker_ctx.call_id, exception_cls.__name__, str(exc)
+         'service.broken.1', exception_cls.__name__, str(raised.value)
     )
-    expected_extra = worker_ctx.context_data
-    expected_tags = {
-        'call_id': worker_ctx.call_id,
-        'parent_call_id': worker_ctx.immediate_parent_call_id,
-        'service_name': worker_ctx.container.service_name,
-        'method_name': worker_ctx.entrypoint.method_name
-    }
-    expected_user = {}
-    expected_http = {}
+    expected_extra = ANY
     expected_data = {
         'logger': expected_logger,
         'level': expected_level,
-        'tags': expected_tags,
-        'user': expected_user,
-        'request': expected_http
+        'tags': ANY,
+        'user': {},
+        'request': {}
     }
 
-    assert reporter.client.captureException.call_count == 1
-
-    _, kwargs = reporter.client.captureException.call_args
+    _, kwargs = sentry.client.captureException.call_args
     assert kwargs['message'] == expected_message
     assert kwargs['extra'] == expected_extra
     assert kwargs['data'] == expected_data
 
 
+@pytest.mark.usefixtures('patched_sentry')
 @pytest.mark.parametrize("exception_cls,expected_count", [
     (CustomException, 0),
     (KeyError, 1)
 ])
 def test_expected_exception_not_reported(
-    exception_cls, expected_count, config, worker_ctx
+    exception_cls, expected_count, container_factory, config
 ):
 
-    exc = exception_cls("Error!")
-    exc_info = (exception_cls, exc, None)
+    class Service(object):
+        name = "service"
+
+        sentry = SentryReporter()
+
+        @rpc(expected_exceptions=CustomException)
+        def broken(self):
+            raise exception_cls("Error!")
 
     config['SENTRY']['REPORT_EXPECTED_EXCEPTIONS'] = False
-    container = Mock(config=config)
 
-    reporter = SentryReporter().bind(container, "sentry")
-    reporter.setup()
+    container = container_factory(Service, config)
+    container.start()
 
-    with patch.object(reporter.client, 'captureException') as capture:
-        reporter.worker_result(worker_ctx, None, exc_info)
+    with entrypoint_waiter(container, 'broken') as result:
+        with ServiceRpcProxy('service', config) as rpc_proxy:
+            with pytest.raises(RemoteError):
+                rpc_proxy.broken()
 
-    assert capture.call_count == expected_count
+        with pytest.raises(exception_cls):
+            result.get()
+
+    sentry = get_extension(container, SentryReporter)
+
+    assert sentry.client.captureException.call_count == expected_count
 
 
+@pytest.mark.usefixtures('patched_sentry')
 class TestUserContext(object):
-
-    @pytest.yield_fixture(autouse=True)
-    def patched_sentry(self):
-        with patch.object(Client, 'captureException'):
-            yield
 
     def test_user_defaults(self, container_factory, service_cls, config):
 
@@ -281,12 +288,8 @@ class TestUserContext(object):
 
 
 @pytest.mark.usefixtures('predictable_call_ids')
+@pytest.mark.usefixtures('patched_sentry')
 class TestExtraContext(object):
-
-    @pytest.yield_fixture(autouse=True)
-    def patched_sentry(self):
-        with patch.object(Client, 'captureException'):
-            yield
 
     def test_extra(self, container_factory, service_cls, config):
 
@@ -319,12 +322,8 @@ class TestExtraContext(object):
 
 
 @pytest.mark.usefixtures('predictable_call_ids')
+@pytest.mark.usefixtures('patched_sentry')
 class TestTagContext(object):
-
-    @pytest.yield_fixture(autouse=True)
-    def patched_sentry(self):
-        with patch.object(Client, 'captureException'):
-            yield
 
     def test_tags_defaults(self, container_factory, service_cls, config):
 
@@ -387,12 +386,8 @@ class TestTagContext(object):
         assert kwargs['data']['tags'] == expected_tags
 
 
+@pytest.mark.usefixtures('patched_sentry')
 class TestHttpContext(object):
-
-    @pytest.yield_fixture(autouse=True)
-    def patched_sentry(self):
-        with patch.object(Client, 'captureException'):
-            yield
 
     @pytest.fixture
     def config(self, config, web_config):
@@ -534,14 +529,11 @@ class TestEndToEnd(object):
 
         return container
 
-    @pytest.fixture
-    def config(self, config, sentry_dsn):
-        config['SENTRY']['DSN'] = sentry_dsn
-        return config
-
     def test_end_to_end(
-        self, container_factory, service_cls, config, sentry_stub, tracker
+        self, container_factory, service_cls, config, sentry_dsn, sentry_stub,
+        tracker
     ):
+        config['SENTRY']['DSN'] = sentry_dsn
 
         container = container_factory(service_cls, config)
         container.start()
