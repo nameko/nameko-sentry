@@ -20,10 +20,6 @@ from nameko_sentry import SentryReporter
 from six.moves.urllib import parse
 
 
-def is_subdict(subdict, superdict):
-    return set(subdict.items()).issubset(superdict.items())
-
-
 class CustomException(Exception):
     pass
 
