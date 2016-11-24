@@ -1,19 +1,27 @@
+import json
 import logging
 import socket
 
+import eventlet
 import pytest
 from eventlet.event import Event
-from mock import ANY, Mock, patch
+from mock import ANY, Mock, patch, PropertyMock
 from nameko.exceptions import RemoteError
 from nameko.rpc import rpc
 from nameko.standalone.rpc import ServiceRpcProxy
 from nameko.testing.services import (
     entrypoint_hook, entrypoint_waiter, get_extension)
 from nameko.web.handlers import HttpRequestHandler, http
-from nameko_sentry import SentryReporter
 from raven import Client
 from raven.transport.eventlet import EventletHTTPTransport
+from werkzeug.exceptions import ClientDisconnected
+
+from nameko_sentry import SentryReporter
 from six.moves.urllib import parse
+
+
+def is_subdict(subdict, superdict):
+    return set(subdict.items()).issubset(superdict.items())
 
 
 class CustomException(Exception):
@@ -55,7 +63,7 @@ def service_cls():
 
 @pytest.yield_fixture
 def patched_sentry():
-    with patch.object(Client, 'captureException'):
+    with patch.object(Client, 'send'):
         yield
 
 
@@ -122,7 +130,7 @@ def test_worker_result(container_factory, service_cls, config):
 
     sentry = get_extension(container, SentryReporter)
 
-    assert sentry.client.captureException.call_count == 0
+    assert sentry.client.send.call_count == 0
 
 
 @pytest.mark.usefixtures('patched_sentry', 'predictable_call_ids')
@@ -156,26 +164,21 @@ def test_worker_exception(
 
     sentry = get_extension(container, SentryReporter)
 
-    assert sentry.client.captureException.call_count == 1
+    assert sentry.client.send.call_count == 1
 
     # generate expected call args
     expected_logger = "service.broken"
     expected_message = "Unhandled exception in call {}: {} {!r}".format(
-         'service.broken.1', exception_cls.__name__, str(raised.value)
+        'service.broken.1', exception_cls.__name__, str(raised.value)
     )
-    expected_extra = ANY
-    expected_data = {
-        'logger': expected_logger,
-        'level': expected_level,
-        'tags': ANY,
-        'user': {},
-        'request': {}
-    }
 
-    _, kwargs = sentry.client.captureException.call_args
+    _, kwargs = sentry.client.send.call_args
     assert kwargs['message'] == expected_message
-    assert kwargs['extra'] == expected_extra
-    assert kwargs['data'] == expected_data
+    assert kwargs['logger'] == expected_logger
+    assert kwargs['level'] == expected_level
+    assert kwargs['extra'] == ANY
+    assert kwargs['tags'] == ANY
+    assert kwargs['user'] == {}
 
 
 @pytest.mark.usefixtures('patched_sentry')
@@ -211,7 +214,7 @@ def test_expected_exception_not_reported(
 
     sentry = get_extension(container, SentryReporter)
 
-    assert sentry.client.captureException.call_count == expected_count
+    assert sentry.client.send.call_count == expected_count
 
 
 @pytest.mark.usefixtures('patched_sentry')
@@ -244,10 +247,10 @@ class TestUserContext(object):
 
         sentry = get_extension(container, SentryReporter)
 
-        assert sentry.client.captureException.call_count == 1
+        assert sentry.client.send.call_count == 1
 
-        _, kwargs = sentry.client.captureException.call_args
-        assert kwargs['data']['user'] == user_data
+        _, kwargs = sentry.client.send.call_args
+        assert kwargs['user'] == user_data
 
     def test_user_custom(self, container_factory, service_cls, config):
 
@@ -281,10 +284,10 @@ class TestUserContext(object):
 
         sentry = get_extension(container, SentryReporter)
 
-        assert sentry.client.captureException.call_count == 1
+        assert sentry.client.send.call_count == 1
 
-        _, kwargs = sentry.client.captureException.call_args
-        assert kwargs['data']['user'] == user_data
+        _, kwargs = sentry.client.send.call_args
+        assert kwargs['user'] == user_data
 
 
 @pytest.mark.usefixtures('predictable_call_ids')
@@ -308,16 +311,17 @@ class TestExtraContext(object):
 
         sentry = get_extension(container, SentryReporter)
 
-        assert sentry.client.captureException.call_count == 1
+        assert sentry.client.send.call_count == 1
 
-        expected_extra = {
-            'call_id_stack': [
-                'standalone_rpc_proxy.call.0', 'service.broken.1'
-            ],
-            'language': 'en-gb'
+        expected_extra = {  # double-encoded unicode
+            'call_id_stack': (
+                "u'standalone_rpc_proxy.call.0'", "u'service.broken.1'"
+            ),
+            'language': "u'en-gb'",
+            'sys.argv': ANY
         }
 
-        _, kwargs = sentry.client.captureException.call_args
+        _, kwargs = sentry.client.send.call_args
         assert kwargs['extra'] == expected_extra
 
 
@@ -336,17 +340,18 @@ class TestTagContext(object):
 
         sentry = get_extension(container, SentryReporter)
 
-        assert sentry.client.captureException.call_count == 1
+        assert sentry.client.send.call_count == 1
 
         expected_tags = {
+            'site': config['SENTRY']['CLIENT_CONFIG']['site'],
             'call_id': 'service.broken.1',
             'parent_call_id': 'standalone_rpc_proxy.call.0',
             'service_name': 'service',
             'method_name': 'broken'
         }
 
-        _, kwargs = sentry.client.captureException.call_args
-        assert kwargs['data']['tags'] == expected_tags
+        _, kwargs = sentry.client.send.call_args
+        assert expected_tags == kwargs['tags']
 
     def test_tags_custom(self, container_factory, service_cls, config):
 
@@ -372,18 +377,19 @@ class TestTagContext(object):
 
         sentry = get_extension(container, SentryReporter)
 
-        assert sentry.client.captureException.call_count == 1
+        assert sentry.client.send.call_count == 1
 
         expected_tags = {
+            'site': config['SENTRY']['CLIENT_CONFIG']['site'],
             'call_id': 'service.broken.1',
             'parent_call_id': 'standalone_rpc_proxy.call.0',
             'service_name': 'service',
             'method_name': 'broken',
-            'session_id': 1,  # extra
+            'session_id': '1',  # extra
         }
 
-        _, kwargs = sentry.client.captureException.call_args
-        assert kwargs['data']['tags'] == expected_tags
+        _, kwargs = sentry.client.send.call_args
+        assert expected_tags == kwargs['tags']
 
 
 @pytest.mark.usefixtures('patched_sentry')
@@ -414,8 +420,8 @@ class TestHttpContext(object):
 
         sentry = get_extension(container, SentryReporter)
 
-        assert sentry.client.captureException.call_count == 1
-        _, kwargs = sentry.client.captureException.call_args
+        assert sentry.client.send.call_count == 1
+        _, kwargs = sentry.client.send.call_args
 
         expected_http = {
             'url': ANY,
@@ -425,7 +431,99 @@ class TestHttpContext(object):
             'headers': ANY,
             'env': ANY
         }
-        assert kwargs['data']['request'] == expected_http
+        assert kwargs['request'] == expected_http
+
+    def test_json_payload(
+        self, container_factory, config, web_session
+    ):
+        class Service(object):
+            name = "service"
+
+            sentry = SentryReporter()
+
+            @http('POST', '/resource')
+            def resource(self, request):
+                raise CustomException()
+
+        container = container_factory(Service, config)
+        container.start()
+
+        submitted_data = {
+            'foo': 'bar'
+        }
+        with entrypoint_waiter(container, 'resource'):
+            rv = web_session.post('/resource', json=submitted_data)
+            assert rv.status_code == 500
+            assert "CustomException" in rv.text
+
+        sentry = get_extension(container, SentryReporter)
+
+        assert sentry.client.send.call_count == 1
+        _, kwargs = sentry.client.send.call_args
+
+        assert kwargs['request']['data'] == json.dumps(submitted_data)
+
+    def test_form_submission(
+        self, container_factory, config, web_session
+    ):
+        class Service(object):
+            name = "service"
+
+            sentry = SentryReporter()
+
+            @http('POST', '/resource')
+            def resource(self, request):
+                raise CustomException()
+
+        container = container_factory(Service, config)
+        container.start()
+
+        submitted_data = {
+            'foo': 'bar'
+        }
+        with entrypoint_waiter(container, 'resource'):
+            web_session.post('/resource', data=submitted_data)
+
+        sentry = get_extension(container, SentryReporter)
+
+        assert sentry.client.send.call_count == 1
+        _, kwargs = sentry.client.send.call_args
+
+        assert kwargs['request']['data'] == submitted_data
+
+    def test_client_disconnect(
+        self, container_factory, config, web_session
+    ):
+        class Service(object):
+            name = "service"
+
+            sentry = SentryReporter()
+
+            @http('POST', '/resource')
+            def resource(self, request):
+                raise CustomException()
+
+        container = container_factory(Service, config)
+        container.start()
+
+        request = Mock(
+            method="GET",
+            url="http://example.com",
+            mimetype='application/json',
+            environ={}
+        )
+        type(request).data = PropertyMock(side_effect=ClientDisconnected)
+
+        with entrypoint_hook(container, 'resource') as hook:
+            with pytest.raises(CustomException):
+                hook(request)
+
+        sentry = get_extension(container, SentryReporter)
+
+        assert sentry.client.send.call_count == 1
+        _, kwargs = sentry.client.send.call_args
+
+        assert kwargs['request']['data'] == {}
 
     def test_unsupported_http_entrypoint(
         self, container_factory, config, web_session
@@ -458,11 +556,11 @@ class TestHttpContext(object):
 
         sentry = get_extension(container, SentryReporter)
 
-        assert sentry.client.captureException.call_count == 1
-        _, kwargs = sentry.client.captureException.call_args
+        assert sentry.client.send.call_count == 1
+        _, kwargs = sentry.client.send.call_args
 
         expected_http = {}
-        assert kwargs['data']['request'] == expected_http
+        assert kwargs['request'] == expected_http
 
 
 @patch.object(EventletHTTPTransport, '_send_payload')
@@ -486,6 +584,50 @@ def test_raven_transport_does_not_affect_container(
                 broken()
 
     container.stop()
+
+
+@pytest.mark.usefixtures('patched_sentry')
+class TestConcurrency(object):
+
+    @pytest.fixture
+    def config(self, config, web_config):
+        config.update(web_config)
+        return config
+
+    def test_concurrent_workers(
+        self, container_factory, config, web_session
+    ):
+
+        class Service(object):
+            name = "service"
+
+            sentry = SentryReporter()
+
+            @http('GET', '/resource')
+            def resource(self, request):
+                raise CustomException()
+
+        container = container_factory(Service, config)
+        container.start()
+
+        called = Mock()
+
+        def called_twice(worker_ctx, res, exc_info):
+            called()
+            return called.call_count == 2
+
+        with entrypoint_waiter(container, 'resource', callback=called_twice):
+            eventlet.spawn(web_session.get, '/resource?q1')
+            eventlet.spawn(web_session.get, '/resource?q2')
+
+        sentry = get_extension(container, SentryReporter)
+
+        assert sentry.client.send.call_count == 2
+        query_strings = {
+            kwargs['request']['query_string']
+            for (_, kwargs) in sentry.client.send.call_args_list
+        }
+        assert query_strings == {"q1", "q2"}
 
 
 class TestEndToEnd(object):

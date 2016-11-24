@@ -1,3 +1,4 @@
+from collections import defaultdict
 import logging
 import re
 
@@ -42,6 +43,8 @@ class SentryReporter(DependencyProvider):
         self.user_type_context_keys = user_type_context_keys
         self.tag_type_context_keys = tag_type_context_keys
 
+        self.contexts = defaultdict(lambda: defaultdict(dict))
+
     def format_message(self, worker_ctx, exc_info):
         exc_type, exc, _ = exc_info
         return (
@@ -55,14 +58,21 @@ class SentryReporter(DependencyProvider):
             worker_ctx.entrypoint, 'expected_exceptions', tuple())
         return isinstance(exc, expected_exceptions)
 
-    def http_context(self, worker_ctx, exc_info):
+    def get_raven_context(self, worker_ctx):
+        return self.contexts[worker_ctx]
+
+    def get_dependency(self, worker_ctx):
+        """ Return `context` for worker to use
+        """
+        return self.get_raven_context(worker_ctx)
+
+    def http_context(self, worker_ctx):
         """ Attempt to extract HTTP context if an HTTP entrypoint was used.
         """
         http = {}
         if isinstance(worker_ctx.entrypoint, HttpRequestHandler):
             try:
                 request = worker_ctx.args[0]
-
                 try:
                     if request.mimetype == 'application/json':
                         data = request.data
@@ -84,10 +94,11 @@ class SentryReporter(DependencyProvider):
                 })
             except:
                 pass  # probably not a compatible entrypoint
-        return http
+
+        self.get_raven_context(worker_ctx)['request'].update(http)
 
     def user_context(self, worker_ctx, exc_info):
-        """ Return any user context to include in the sentry payload.
+        """ Merge any user context to include in the sentry payload.
 
         Extracts user identifiers from the worker context data by matching
         context keys with
@@ -98,10 +109,11 @@ class SentryReporter(DependencyProvider):
                 if re.search(matcher, key):
                     user[key] = worker_ctx.context_data[key]
                     break
-        return user
+
+        self.get_raven_context(worker_ctx)['user'].update(user)
 
     def tags_context(self, worker_ctx, exc_info):
-        """ Return any tags to include in the sentry payload.
+        """ Merge any tags to include in the sentry payload.
         """
         tags = {
             'call_id': worker_ctx.call_id,
@@ -114,21 +126,34 @@ class SentryReporter(DependencyProvider):
                 if re.search(matcher, key):
                     tags[key] = worker_ctx.context_data[key]
                     break
-        return tags
+
+        self.get_raven_context(worker_ctx)['tags'].update(tags)
 
     def extra_context(self, worker_ctx, exc_info):
-        """ Return any extra context to include in the sentry payload.
+        """ Merge any extra context to include in the sentry payload.
 
         Includes all available worker context data.
         """
         extra = {}
         extra.update(worker_ctx.context_data)
-        return extra
+
+        self.get_raven_context(worker_ctx)['extra'].update(extra)
+
+    def worker_setup(self, worker_ctx):
+        self.http_context(worker_ctx)
 
     def worker_result(self, worker_ctx, result, exc_info):
         if exc_info is None:
             return
+
+        self.user_context(worker_ctx, exc_info)
+        self.tags_context(worker_ctx, exc_info)
+        self.extra_context(worker_ctx, exc_info)
+
         self.capture_exception(worker_ctx, exc_info)
+
+    def worker_teardown(self, worker_ctx):
+        del self.contexts[worker_ctx]
 
     def capture_exception(self, worker_ctx, exc_info):
 
@@ -145,19 +170,10 @@ class SentryReporter(DependencyProvider):
         else:
             level = logging.ERROR
 
-        user = self.user_context(worker_ctx, exc_info)
-        tags = self.tags_context(worker_ctx, exc_info)
-        http = self.http_context(worker_ctx, exc_info)
-        extra = self.extra_context(worker_ctx, exc_info)
-
         data = {
             'logger': logger,
-            'level': level,
-            'user': user,
-            'tags': tags,
-            'request': http
+            'level': level
         }
 
-        self.client.captureException(
-            exc_info, message=message, extra=extra, data=data
-        )
+        self.client.context.merge(self.get_raven_context(worker_ctx))
+        self.client.captureException(exc_info, message=message, data=data)
