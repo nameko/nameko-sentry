@@ -626,6 +626,56 @@ class TestConcurrency(object):
         assert query_strings == {"q1", "q2"}
 
 
+@pytest.mark.usefixtures('patched_sentry')
+class TestWorkerUsage(object):
+
+    @pytest.fixture
+    def service_cls(self):
+
+        class Service(object):
+            name = "service"
+
+            sentry = SentryReporter()
+
+            @rpc
+            def broken(self, data):
+                self.sentry.merge({
+                    "arbitrary": data
+                })
+                raise CustomException("Error!")
+
+        return Service
+
+    def test_worker_usage(self, container_factory, service_cls, config):
+
+        container = container_factory(service_cls, config)
+        container.start()
+
+        user_data = {
+            'user': 'matt'
+        }
+        context_data = {
+            'language': 'en-gb'
+        }
+        context_data.update(user_data)
+
+        data = {'foo': 'bar'}
+
+        with ServiceRpcProxy(
+            'service', config, context_data=context_data
+        ) as rpc_proxy:
+            with pytest.raises(RemoteError):
+                rpc_proxy.broken(data)
+
+        sentry = get_extension(container, SentryReporter)
+
+        assert sentry.client.send.call_count == 1
+
+        _, kwargs = sentry.client.send.call_args
+        assert kwargs['user'] == user_data
+        assert kwargs['arbitrary'] == data
+
+
 class TestEndToEnd(object):
 
     @pytest.fixture
