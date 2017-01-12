@@ -832,7 +832,7 @@ class TestBreadcrumbs(object):
             'category': None,
             'data': None,
             'level': ANY,
-            'message': 'q1',
+            'message': 'q1'.encode('utf-8'),
             'timestamp': ANY,
             'type': 'default'
         }
@@ -843,7 +843,7 @@ class TestBreadcrumbs(object):
             'category': None,
             'data': None,
             'level': ANY,
-            'message': 'q2',
+            'message': 'q2'.encode('utf-8'),
             'timestamp': ANY,
             'type': 'default'
         }
