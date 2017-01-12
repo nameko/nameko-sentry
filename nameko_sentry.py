@@ -7,7 +7,7 @@ from threading import local
 import six
 from nameko.extensions import DependencyProvider
 from nameko.web.handlers import HttpRequestHandler
-from raven import Client, breadcrumbs
+from raven import Client
 from raven.context import Context as RavenContext
 from raven.utils.wsgi import get_environ, get_headers
 from six.moves.urllib.parse import urlsplit  # pylint: disable=E0401
