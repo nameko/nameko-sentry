@@ -867,7 +867,7 @@ class TestEndToEnd(object):
 
     @pytest.fixture
     def sentry_dsn(self, free_port):
-        return 'eventlet+http://user:pass@localhost:{}/1'.format(free_port)
+        return 'eventlet+http://user:pass@127.0.0.1:{}/1'.format(free_port)
 
     @pytest.fixture
     def sentry_stub(self, container_factory, sentry_dsn, tracker):
