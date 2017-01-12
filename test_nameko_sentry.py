@@ -309,11 +309,11 @@ class TestExtraContext(object):
 
         assert sentry.client.send.call_count == 1
 
-        expected_extra = {  # double-encoded unicode
+        expected_extra = {
             'call_id_stack': (
-                "u'standalone_rpc_proxy.call.0'", "u'service.broken.1'"
+                repr(u"standalone_rpc_proxy.call.0"), repr(u"service.broken.1")
             ),
-            'language': "u'en-gb'",
+            'language': repr(u"en-gb"),
             'sys.argv': ANY
         }
 
@@ -457,7 +457,8 @@ class TestHttpContext(object):
         assert sentry.client.send.call_count == 1
         _, kwargs = sentry.client.send.call_args
 
-        assert kwargs['request']['data'] == json.dumps(submitted_data)
+        received_data = kwargs['request']['data']
+        assert received_data == json.dumps(submitted_data).encode('utf-8')
 
     def test_form_submission(
         self, container_factory, config, web_session
