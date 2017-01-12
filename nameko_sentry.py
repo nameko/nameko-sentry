@@ -1,19 +1,17 @@
-from collections import defaultdict
 import logging
 import re
-
-from nameko.extensions import DependencyProvider
-from nameko.web.handlers import HttpRequestHandler
-from raven import Client
-from raven.context import Context as RavenContext
-from raven.utils.wsgi import get_environ, get_headers
-from werkzeug.exceptions import ClientDisconnected
+from abc import ABCMeta
+from collections import defaultdict
+from threading import local
 
 import six
+from nameko.extensions import DependencyProvider
+from nameko.web.handlers import HttpRequestHandler
+from raven import Client, breadcrumbs
+from raven.context import Context as RavenContext
+from raven.utils.wsgi import get_environ, get_headers
 from six.moves.urllib.parse import urlsplit  # pylint: disable=E0401
-from threading import local
-from abc import ABCMeta
-
+from werkzeug.exceptions import ClientDisconnected
 
 USER_TYPE_CONTEXT_KEYS = (
     re.compile("user|email|session"),
@@ -27,7 +25,9 @@ class RemoveLocalMeta(ABCMeta, type):
     """ Metaclass that *removes* the thread-local base from our `RavenContext`
     subclass.
 
-    This avoids us having to reimplement the Context object ourselves.
+    This avoids us having to reimplement the Context object ourselves, and
+    means any breadcrumbs emitted via the `raven.breadcrumbs.capture` helper
+    in the worker thread are captured.
     """
     def mro(cls):
         chain = [cls]
@@ -68,6 +68,7 @@ class SentryReporter(DependencyProvider):
         self.user_type_context_keys = user_type_context_keys
         self.tag_type_context_keys = tag_type_context_keys
 
+        # TODO better to put this at the module level
         self.contexts = defaultdict(self.Context)
 
     def format_message(self, worker_ctx, exc_info):
@@ -200,5 +201,12 @@ class SentryReporter(DependencyProvider):
             'level': level
         }
 
-        self.client.context.merge(self.get_raven_context(worker_ctx))
+        raven_context = self.get_raven_context(worker_ctx)
+
+        self.client.context.merge(raven_context)
+        self.client.context.merge({
+            'breadcrumbs': {
+                'values': raven_context.breadcrumbs.get_buffer()
+            }
+        })
         self.client.captureException(exc_info, message=message, data=data)

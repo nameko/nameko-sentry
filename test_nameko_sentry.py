@@ -12,7 +12,7 @@ from nameko.standalone.rpc import ServiceRpcProxy
 from nameko.testing.services import (
     entrypoint_hook, entrypoint_waiter, get_extension)
 from nameko.web.handlers import HttpRequestHandler, http
-from raven import Client
+from raven import breadcrumbs, Client
 from raven.transport.eventlet import EventletHTTPTransport
 from werkzeug.exceptions import ClientDisconnected
 
@@ -675,6 +675,180 @@ class TestWorkerUsage(object):
         _, kwargs = sentry.client.send.call_args
         assert kwargs['user'] == user_data
         assert kwargs['arbitrary'] == data
+
+
+@pytest.mark.usefixtures('patched_sentry')
+class TestBreadcrumbs(object):
+
+    @pytest.fixture
+    def config(self, config, web_config):
+        config.update(web_config)
+        return config
+
+    @pytest.fixture
+    def service_cls(self):
+
+        class Service(object):
+            name = "service"
+
+            sentry = SentryReporter()
+
+            @rpc
+            def record_with_helper(self, data):
+                breadcrumbs.record(
+                    category="worker",
+                    message='breadcrumb message',
+                    level='warning',
+                    data=data
+                )
+                raise CustomException("Error!")
+
+            @rpc
+            def record_directly(self, data):
+                self.sentry.breadcrumbs.record(
+                    category="worker",
+                    message='breadcrumb message',
+                    level='warning',
+                    data=data
+                )
+                raise CustomException("Error!")
+
+            @rpc
+            def activate_deactivate(self, a1, a2, a3):
+                breadcrumbs.record(category="worker", message=a1)
+                self.sentry.deactivate()
+                breadcrumbs.record(category="worker", message=a2)
+                self.sentry.activate()
+                breadcrumbs.record(category="worker", message=a3)
+                raise CustomException("Error!")
+
+        return Service
+
+    @pytest.mark.parametrize(
+        "method", ["record_directly", "record_with_helper"]
+    )
+    def test_breadcrumbs(self, method, container_factory, service_cls, config):
+
+        container = container_factory(service_cls, config)
+        container.start()
+
+        data = {'foo': 'bar'}
+
+        with ServiceRpcProxy('service', config) as rpc_proxy:
+            with pytest.raises(RemoteError):
+                getattr(rpc_proxy, method)(data)
+
+        sentry = get_extension(container, SentryReporter)
+
+        assert sentry.client.send.call_count == 1
+
+        _, kwargs = sentry.client.send.call_args
+        breadcrumbs = [
+            crumb for crumb in kwargs['breadcrumbs']['values']
+            if crumb['category'] == "worker"
+        ]
+
+        assert breadcrumbs == [{
+            'category': 'worker',
+            'data': data,
+            'level': 'warning',
+            'message': 'breadcrumb message',
+            'timestamp': ANY,
+            'type': 'default'
+        }]
+
+    def test_activate_deactivate(self, container_factory, service_cls, config):
+
+        container = container_factory(service_cls, config)
+        container.start()
+
+        with ServiceRpcProxy('service', config) as rpc_proxy:
+            with pytest.raises(RemoteError):
+                rpc_proxy.activate_deactivate("a", "b", "c")
+
+        sentry = get_extension(container, SentryReporter)
+
+        assert sentry.client.send.call_count == 1
+
+        _, kwargs = sentry.client.send.call_args
+        breadcrumbs = [
+            crumb for crumb in kwargs['breadcrumbs']['values']
+            if crumb['category'] == "worker"
+        ]
+
+        assert breadcrumbs == [{
+            'category': "worker",
+            'data': None,
+            'level': ANY,
+            'message': 'a',
+            'timestamp': ANY,
+            'type': 'default'
+        }, {
+            'category': "worker",
+            'data': None,
+            'level': ANY,
+            'message': 'c',
+            'timestamp': ANY,
+            'type': 'default'
+        }]
+
+    def test_concurrency(
+        self, container_factory, config, web_session
+    ):
+
+        class Service(object):
+            name = "service"
+
+            sentry = SentryReporter()
+
+            @http('GET', '/resource')
+            def resource(self, request):
+                breadcrumbs.record(message=request.query_string)
+                raise CustomException()
+
+        container = container_factory(Service, config)
+        container.start()
+
+        called = Mock()
+
+        def called_twice(worker_ctx, res, exc_info):
+            called()
+            return called.call_count == 2
+
+        with entrypoint_waiter(container, 'resource', callback=called_twice):
+            eventlet.spawn(web_session.get, '/resource?q1')
+            eventlet.spawn(web_session.get, '/resource?q2')
+
+        sentry = get_extension(container, SentryReporter)
+
+        assert sentry.client.send.call_count == 2
+
+        breadcrumbs_map = {
+            kwargs['request']['query_string']: kwargs['breadcrumbs']['values']
+            for (_, kwargs) in sentry.client.send.call_args_list
+        }
+
+        expected_crumb_q1 = {
+            'category': None,
+            'data': None,
+            'level': ANY,
+            'message': 'q1',
+            'timestamp': ANY,
+            'type': 'default'
+        }
+        assert expected_crumb_q1 in breadcrumbs_map['q1']
+        assert expected_crumb_q1 not in breadcrumbs_map['q2']
+
+        expected_crumb_q2 = {
+            'category': None,
+            'data': None,
+            'level': ANY,
+            'message': 'q2',
+            'timestamp': ANY,
+            'type': 'default'
+        }
+        assert expected_crumb_q2 in breadcrumbs_map['q2']
+        assert expected_crumb_q2 not in breadcrumbs_map['q1']
 
 
 class TestEndToEnd(object):
