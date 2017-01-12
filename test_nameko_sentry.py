@@ -155,8 +155,8 @@ def test_worker_exception(
             with pytest.raises(RemoteError):
                 rpc_proxy.broken()
 
-        with pytest.raises(exception_cls) as raised:
-            result.get()
+    with pytest.raises(exception_cls) as raised:
+        result.get()
 
     sentry = get_extension(container, SentryReporter)
 
@@ -205,8 +205,8 @@ def test_expected_exception_not_reported(
             with pytest.raises(RemoteError):
                 rpc_proxy.broken()
 
-        with pytest.raises(exception_cls):
-            result.get()
+    with pytest.raises(exception_cls):
+        result.get()
 
     sentry = get_extension(container, SentryReporter)
 
