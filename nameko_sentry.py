@@ -32,6 +32,7 @@ class RemoveLocalMeta(ABCMeta, type):
     def mro(cls):
         chain = [cls]
         chain.extend(
+            #pylint: disable=E1101
             base for base in RavenContext.mro() if base not in local.mro()
         )
         chain.append(object)
