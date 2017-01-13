@@ -10,7 +10,7 @@ setup(
     url='http://github.com/mattbennett/nameko-sentry',
     py_modules=['nameko_sentry'],
     install_requires=[
-        "nameko==2.5.0.dev1",
+        "nameko==2.5.0.dev2",
         "raven>=3.0.0"
     ],
     extras_require={
@@ -22,7 +22,7 @@ setup(
         ]
     },
     dependency_links=[
-        "http://github.com/mattbennett/nameko/tarball/fb7ecd7e#egg=nameko-2.5.0.dev1"
+        "http://github.com/mattbennett/nameko/tarball/b26901cb#egg=nameko-2.5.0.dev2"
     ],
     zip_safe=True,
     license='Apache License, Version 2.0',
