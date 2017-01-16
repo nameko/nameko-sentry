@@ -640,14 +640,18 @@ class TestWorkerUsage(object):
 
             @rpc
             def broken(self, data):
-                self.sentry.merge({
+                self.sentry.context.merge({
                     "arbitrary": data
                 })
                 raise CustomException("Error!")
 
+            @rpc
+            def get_dsn(self):
+                return self.sentry.get_public_dsn()
+
         return Service
 
-    def test_worker_usage(self, container_factory, service_cls, config):
+    def test_context_merge(self, container_factory, service_cls, config):
 
         container = container_factory(service_cls, config)
         container.start()
@@ -675,6 +679,17 @@ class TestWorkerUsage(object):
         _, kwargs = sentry.client.send.call_args
         assert kwargs['user'] == user_data
         assert kwargs['arbitrary'] == data
+
+    def test_access_client(self, container_factory, service_cls, config):
+
+        container = container_factory(service_cls, config)
+        container.start()
+
+        with ServiceRpcProxy('service', config) as rpc_proxy:
+            res = rpc_proxy.get_dsn()
+
+        sentry = get_extension(container, SentryReporter)
+        assert res == sentry.client.get_public_dsn()
 
 
 @pytest.mark.usefixtures('patched_sentry')
@@ -705,7 +720,7 @@ class TestBreadcrumbs(object):
 
             @rpc
             def record_directly(self, data):
-                self.sentry.breadcrumbs.record(
+                self.sentry.captureBreadcrumb(
                     category="worker",
                     message='breadcrumb message',
                     level='warning',
@@ -714,12 +729,12 @@ class TestBreadcrumbs(object):
                 raise CustomException("Error!")
 
             @rpc
-            def activate_deactivate(self, a1, a2, a3):
-                breadcrumbs.record(category="worker", message=a1)
-                self.sentry.deactivate()
-                breadcrumbs.record(category="worker", message=a2)
-                self.sentry.activate()
-                breadcrumbs.record(category="worker", message=a3)
+            def activate_deactivate(self, a, b, c):
+                breadcrumbs.record(category="worker", message=a)
+                self.sentry.context.deactivate()
+                breadcrumbs.record(category="worker", message=b)
+                self.sentry.context.activate()
+                breadcrumbs.record(category="worker", message=c)
                 raise CustomException("Error!")
 
         return Service

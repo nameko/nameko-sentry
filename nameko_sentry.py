@@ -55,9 +55,9 @@ class SentryReporter(DependencyProvider):
         return isinstance(exc, expected_exceptions)
 
     def get_dependency(self, worker_ctx):
-        """ Return `context` for worker to use
+        """ Expose the Raven Client directly to the worker
         """
-        return self.client.context
+        return self.client
 
     def http_context(self, worker_ctx):
         """ Attempt to extract HTTP context if an HTTP entrypoint was used.
