@@ -10,7 +10,7 @@ setup(
     url='http://github.com/mattbennett/nameko-sentry',
     py_modules=['nameko_sentry'],
     install_requires=[
-        "nameko==2.5.1",
+        "nameko>=2.5.1",
         "raven>=3.0.0"
     ],
     extras_require={
