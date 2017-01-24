@@ -267,7 +267,7 @@ class TestUserContext(object):
         }
 
         context_data = {
-            'session_id': 1,  # exclude session
+            'session_id': 1,  # excluded from user data
             'language': 'en-gb'
         }
         context_data.update(user_data)
@@ -284,6 +284,7 @@ class TestUserContext(object):
 
         _, kwargs = sentry.client.send.call_args
         assert kwargs['user'] == user_data
+        assert "session_id" not in kwargs['user']
 
 
 @pytest.mark.usefixtures('predictable_call_ids')
