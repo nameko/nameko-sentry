@@ -3,7 +3,7 @@ from setuptools import setup
 
 setup(
     name='nameko-sentry',
-    version='0.0.3',
+    version='0.0.4',
     description='Nameko extension sends entrypoint exceptions to sentry',
     author='Matt Bennett',
     author_email='matt@bennett.name',
