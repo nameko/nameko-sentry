@@ -102,7 +102,7 @@ def test_setup_without_optional_config(container_factory, service_cls, config):
 
 @pytest.mark.usefixtures('patched_sentry')
 def test_setup_without_sentry_section_in_config(
-        container_factory, service_cls, config
+    container_factory, service_cls, config
 ):
     del config['SENTRY']
 
