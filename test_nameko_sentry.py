@@ -101,6 +101,22 @@ def test_setup_without_optional_config(container_factory, service_cls, config):
 
 
 @pytest.mark.usefixtures('patched_sentry')
+def test_setup_without_sentry_section_in_config(
+    container_factory, service_cls, config
+):
+    del config['SENTRY']
+
+    container = container_factory(service_cls, config)
+    container.start()
+
+    sentry = get_extension(container, SentryReporter)
+
+    # DSN applied correctly
+    assert sentry.client.get_public_dsn() is None
+    assert not sentry.client.is_enabled()
+
+
+@pytest.mark.usefixtures('patched_sentry')
 def test_disabled(container_factory, service_cls, config):
 
     config['SENTRY']['DSN'] = None

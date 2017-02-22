@@ -23,7 +23,8 @@ class SentryReporter(DependencyProvider):
     def setup(self):
         sentry_config = self.container.config.get('SENTRY')
 
-        dsn = sentry_config['DSN']
+        sentry_config = sentry_config or {}
+        dsn = sentry_config.get('DSN', None)
         kwargs = sentry_config.get('CLIENT_CONFIG', {})
         self.client = Client(dsn, **kwargs)
 
@@ -146,7 +147,6 @@ class SentryReporter(DependencyProvider):
         self.capture_exception(worker_ctx, exc_info)
 
     def capture_exception(self, worker_ctx, exc_info):
-
         message = self.format_message(worker_ctx, exc_info)
 
         logger = '{}.{}'.format(
