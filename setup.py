@@ -17,7 +17,8 @@ setup(
         'dev': [
             "coverage==4.0.3",
             "flake8==3.3.0",
-            "pylint==1.6.5",
+            "pep8-naming==0.4.1",
+            "mccabe==0.6.1",
             "pytest==3.0.6",
         ]
     },
