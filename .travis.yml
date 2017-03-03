@@ -6,14 +6,17 @@ services:
 - rabbitmq
 install:
 - pip install tox
+python:
+    - 2.7
+    - pypy
+    - 3.3
+    - 3.4
+    - 3.5
+    - 3.6
 env:
-- TOX_ENV=py27-test
-- TOX_ENV=py33-test
-- TOX_ENV=py34-test
-- TOX_ENV=py35-test
-- TOX_ENV=py36-test
-script:
-- tox -e $TOX_ENV
+  - TOXENV=py-normal
+install: pip install tox
+script: tox
 deploy:
   provider: pypi
   user: mattbennett
