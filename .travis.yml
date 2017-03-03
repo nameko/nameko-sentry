@@ -11,7 +11,6 @@ python:
     - 3.3
     - 3.4
     - 3.5
-    - 3.6
 env:
   - TOXENV=py-normal
 install: pip install tox
