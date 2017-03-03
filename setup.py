@@ -16,9 +16,10 @@ setup(
     extras_require={
         'dev': [
             "coverage==4.0.3",
-            "flake8==2.5.0",
-            "pylint==1.5.1",
-            "pytest==2.8.3",
+            "flake8==3.3.0",
+            "pep8-naming==0.4.1",
+            "mccabe==0.6.1",
+            "pytest==3.0.6",
         ]
     },
     zip_safe=True,
@@ -32,6 +33,8 @@ setup(
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.3",
         "Programming Language :: Python :: 3.4",
+        "Programming Language :: Python :: 3.5",
+        "Programming Language :: Python :: 3.6",
         "Topic :: Internet",
         "Topic :: Software Development :: Libraries :: Python Modules",
         "Intended Audience :: Developers",
