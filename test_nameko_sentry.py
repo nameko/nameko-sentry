@@ -929,10 +929,9 @@ class TestReleaseMemory(object):
                 with pytest.raises(CustomException):
                     hook()
 
-        eventlet.sleep(.5)
         gc.collect()
         count_after = objgraph.count('raven.breadcrumbs.BreadcrumbBuffer')
-        assert count_before == count_after == 1
+        assert count_before == count_after
 
 
 class TestEndToEnd(object):
