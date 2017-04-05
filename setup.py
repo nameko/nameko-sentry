@@ -19,6 +19,7 @@ setup(
             "flake8==2.5.0",
             "pylint==1.5.1",
             "pytest==2.8.3",
+            "objgraph==3.1.0"
         ]
     },
     zip_safe=True,
