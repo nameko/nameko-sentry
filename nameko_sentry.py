@@ -146,6 +146,9 @@ class SentryReporter(DependencyProvider):
 
         self.capture_exception(worker_ctx, exc_info)
 
+    def worker_teardown(self, worker_ctx):
+        self.client.context.clear(deactivate=True)
+
     def capture_exception(self, worker_ctx, exc_info):
         message = self.format_message(worker_ctx, exc_info)
 
