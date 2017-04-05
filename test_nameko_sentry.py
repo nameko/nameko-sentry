@@ -921,6 +921,7 @@ class TestReleaseMemory(object):
         container = container_factory(service_cls, config)
         container.start()
 
+        gc.collect()
         count_before = objgraph.count('raven.breadcrumbs.BreadcrumbBuffer')
 
         with entrypoint_hook(container, 'broken') as hook:
@@ -929,7 +930,6 @@ class TestReleaseMemory(object):
                     hook()
 
         gc.collect()
-
         count_after = objgraph.count('raven.breadcrumbs.BreadcrumbBuffer')
         assert count_before == count_after == 1
 
