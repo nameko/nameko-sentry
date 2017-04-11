@@ -1,11 +1,14 @@
+import gc
 import json
 import logging
 import socket
 
 import eventlet
+import objgraph
 import pytest
 from eventlet.event import Event
 from mock import ANY, Mock, patch, PropertyMock
+from nameko.extensions import DependencyProvider
 from nameko.exceptions import RemoteError
 from nameko.rpc import rpc
 from nameko.standalone.rpc import ServiceRpcProxy
@@ -881,6 +884,54 @@ class TestBreadcrumbs(object):
         }
         assert expected_crumb_q2 in breadcrumbs_map['q2']
         assert expected_crumb_q2 not in breadcrumbs_map['q1']
+
+
+@pytest.mark.usefixtures('patched_sentry')
+class TestReleaseMemory(object):
+
+    @pytest.fixture
+    def log(self):
+        return logging.getLogger("test")
+
+    @pytest.fixture
+    def service_cls(self, log):
+
+        class Unsafe(DependencyProvider):
+
+            def get_dependency(self, worker_ctx):
+                return worker_ctx.container._worker_threads[worker_ctx]
+
+        class Service(object):
+            name = "service"
+
+            sentry = SentryReporter()
+            unsafe = Unsafe()
+
+            @rpc
+            def broken(self):
+                log.info("breadcrumb %s", self.unsafe)
+                raise CustomException("Error!")
+
+        return Service
+
+    def test_leak(self, container_factory, service_cls, config):
+        # regression test for
+        # https://github.com/mattbennett/nameko-sentry/issues/12
+
+        container = container_factory(service_cls, config)
+        container.start()
+
+        gc.collect()
+        count_before = objgraph.count('raven.breadcrumbs.BreadcrumbBuffer')
+
+        with entrypoint_hook(container, 'broken') as hook:
+            for _ in range(5):
+                with pytest.raises(CustomException):
+                    hook()
+
+        gc.collect()
+        count_after = objgraph.count('raven.breadcrumbs.BreadcrumbBuffer')
+        assert count_before == count_after
 
 
 class TestEndToEnd(object):
