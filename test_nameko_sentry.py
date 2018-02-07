@@ -32,7 +32,7 @@ def config(rabbit_config):
     config = rabbit_config.copy()
     config.update({
         'SENTRY': {
-            'DSN': 'eventlet+http://user:pass@localhost:9000/1',
+            'DSN': 'http://user:pass@localhost:9000/1',
             'CLIENT_CONFIG': {
                 'site': 'site name'
             }
@@ -64,6 +64,30 @@ def service_cls():
 def patched_sentry():
     with patch.object(Client, 'send'):
         yield
+
+
+@pytest.mark.parametrize("dsn", [
+    'http://user:pass@localhost:9000/1',
+    'eventlet+http://user:pass@localhost:9000/1',
+])
+def test_eventlet_transport(
+    dsn, rabbit_config, container_factory, service_cls
+):
+    config = rabbit_config.copy()
+    config.update({
+        'SENTRY': {
+            'DSN': dsn
+        }
+    })
+
+    container = container_factory(service_cls, config)
+    container.start()
+
+    sentry = get_extension(container, SentryReporter)
+
+    # transport set correctly
+    transport = sentry.client.remote.get_transport()
+    assert isinstance(transport, EventletHTTPTransport)
 
 
 @pytest.mark.usefixtures('patched_sentry')
