@@ -16,8 +16,8 @@ setup(
     extras_require={
         'dev': [
             "coverage==4.0.3",
-            "flake8==2.5.0",
-            "pylint==1.5.1",
+            "flake8==3.3.0",
+            "pylint==1.8.2",
             "pytest==2.8.3",
             "objgraph==3.1.0"
         ]
