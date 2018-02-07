@@ -5,6 +5,7 @@ from nameko.extensions import DependencyProvider
 from nameko.web.handlers import HttpRequestHandler
 from raven import Client
 from raven.utils.wsgi import get_environ, get_headers
+from raven.transport.eventlet import EventletHTTPTransport
 from six.moves.urllib.parse import urlsplit  # pylint: disable=E0401
 from werkzeug.exceptions import ClientDisconnected
 
@@ -26,7 +27,8 @@ class SentryReporter(DependencyProvider):
         sentry_config = sentry_config or {}
         dsn = sentry_config.get('DSN', None)
         kwargs = sentry_config.get('CLIENT_CONFIG', {})
-        self.client = Client(dsn, **kwargs)
+
+        self.client = Client(dsn, transport=EventletHTTPTransport, **kwargs)
 
         report_expected_exceptions = sentry_config.get(
             'REPORT_EXPECTED_EXCEPTIONS', True
