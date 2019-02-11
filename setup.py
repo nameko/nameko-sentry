@@ -7,7 +7,7 @@ setup(
     description='Nameko extension sends entrypoint exceptions to sentry',
     author='Matt Bennett',
     author_email='matt@bennett.name',
-    url='http://github.com/mattbennett/nameko-sentry',
+    url='http://github.com/nameko/nameko-sentry',
     py_modules=['nameko_sentry'],
     install_requires=[
         "nameko>=2.5.1",
