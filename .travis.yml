@@ -36,7 +36,7 @@ matrix:
           secure: thV7e6kG3jA8x0/2DINX7o8U8IhOfhi6lmXenpTZXJWcbqa0bZZQvbwsPRIrlZkZlrGMEirfwsKmmK8UxBiFG9lgbOT8RMH6gyF1fW4cfINm3LQ3/U2Jjww3ZE7Km/ogVi18TQZxVSGUIQP3UUV9sEjif97N8VMON9HjsdbfquHc2XlFsP/4POK95uwOVU8W0cDWq5A4+Lh1L0IFDzUWk3AefH9HssGP386tlM9Yxuozh9bdgr+zpOYH3SDtGmA2mh3/32m4ksbI5KfBGk1g0Quf92Ql2Lykt/9BMLPEE18mEABODj3xursQvBEWTqVImdO6ykUoXEPm6MUkcBsy+v/u04OVgN9NECqvzjfbr/d2KclzNUiJJZu6l2T424zfeICQ+l0Q4hcd3QIJaqcnEEn3BkAQyfpwkMn9JOBgR1jYHXcUuHYOWfHUpG1b4j84VKvhhiLhw3HtUjZCVs5bIsVOQQAsv3la9uZyaSRQy2JnMYmcOipK+EriXOAdqNMSjGSozJ3T0/McIzn67YuqRJfkLeloHz98Toi1kB129LIRDJQQnjLC9hUZqzcvEiO2ZuP3R0VoHXJoKwjF95uTkoMGHTlbdanGeB4ZlaZSg3xctYZH2T9ajko1rkvYteK0d3tO1zI0ZOsTG8XldHa+zublI5CCjRRlwmPlxDAxk6I=
         on:
           tags: true
-          repo: mattbennett/nameko-sentry
+          repo: nameko/nameko-sentry
 
 script:
   - tox -e $TOX_ENV
