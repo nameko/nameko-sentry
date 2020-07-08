@@ -17,6 +17,7 @@ setup(
         'dev': [
             "coverage==4.0.3",
             "flake8==3.3.0",
+            "isort<5",
             "pylint==1.8.2",
             "pytest==2.8.3",
             "objgraph==3.1.0"
