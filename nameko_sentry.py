@@ -88,7 +88,7 @@ class SentryReporter(DependencyProvider):
                     'headers': dict(get_headers(request.environ)),
                     'env': dict(get_environ(request.environ)),
                 })
-            except:
+            except Exception:
                 pass  # probably not a compatible entrypoint
 
         self.client.http_context(http)
