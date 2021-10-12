@@ -14,12 +14,12 @@ setup(
         "raven>=3.0.0"
     ],
     extras_require={
-        'dev': [
-            "coverage==4.0.3",
-            "flake8==3.3.0",
-            "pylint==1.8.2",
-            "pytest==2.8.3",
-            "objgraph==3.1.0"
+        "dev": [
+            "coverage==6.0.1",
+            "flake8==3.9.2",
+            "objgraph==3.5.0",
+            "pylint==2.11.1",
+            "pytest==6.0.2",
         ]
     },
     zip_safe=True,
