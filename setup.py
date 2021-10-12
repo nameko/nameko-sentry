@@ -20,6 +20,7 @@ setup(
             "objgraph==3.5.0",
             "pylint==2.11.1",
             "pytest==6.0.2",
+            "pytest-cov==3.0.0",
         ]
     },
     zip_safe=True,
