@@ -11,7 +11,8 @@ setup(
     py_modules=['nameko_sentry'],
     install_requires=[
         "nameko>=2.5.1",
-        "raven>=3.0.0"
+        "raven>=3.0.0",
+        "werkzeug<3",
     ],
     extras_require={
         "dev": [
