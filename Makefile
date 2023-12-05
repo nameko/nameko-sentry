@@ -7,5 +7,5 @@ pylint:
 	pylint nameko_sentry -E
 
 pytest:
-	pytest --cov -vv
+	nameko test --cov -vv
 	coverage report --show-missing --fail-under=100
