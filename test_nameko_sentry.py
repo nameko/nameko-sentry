@@ -502,7 +502,7 @@ class TestHttpContext(object):
         _, kwargs = sentry.client.send.call_args
 
         received_data = kwargs['request']['data']
-        assert received_data == json.dumps(submitted_data).encode('utf-8')
+        assert received_data == json.dumps(submitted_data)
 
     def test_form_submission(
         self, container_factory, config, web_session

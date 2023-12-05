@@ -7,5 +7,5 @@ pylint:
 	pylint nameko_sentry -E
 
 pytest:
-	coverage run --concurrency=eventlet --source nameko_sentry.py --branch -m pytest test_nameko_sentry.py
+	nameko test --cov -vv
 	coverage report --show-missing --fail-under=100
